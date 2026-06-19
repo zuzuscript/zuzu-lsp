@@ -14,10 +14,10 @@ use lsp_types::request::{
     CodeActionRequest, CodeLensRequest, Completion, DocumentDiagnosticRequest,
     DocumentHighlightRequest, DocumentLinkRequest, DocumentSymbolRequest, ExecuteCommand,
     FoldingRangeRequest, Formatting, GotoDefinition, HoverRequest, InlayHintRequest,
-    PrepareRenameRequest, References, Rename, Request as LspRequest, SelectionRangeRequest,
-    SemanticTokensFullRequest, Shutdown, SignatureHelpRequest, TypeHierarchyPrepare,
-    TypeHierarchySubtypes, TypeHierarchySupertypes, WorkspaceDiagnosticRequest,
-    WorkspaceSymbolRequest,
+    PrepareRenameRequest, References, Rename, Request as LspRequest, ResolveCompletionItem,
+    SelectionRangeRequest, SemanticTokensFullRequest, Shutdown, SignatureHelpRequest,
+    TypeHierarchyPrepare, TypeHierarchySubtypes, TypeHierarchySupertypes,
+    WorkspaceDiagnosticRequest, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem,
@@ -232,7 +232,7 @@ fn capabilities() -> ServerCapabilities {
         selection_range_provider: Some(lsp_types::SelectionRangeProviderCapability::Simple(true)),
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
         completion_provider: Some(CompletionOptions {
-            resolve_provider: Some(false),
+            resolve_provider: Some(true),
             trigger_characters: Some(vec!["/".to_string(), ":".to_string()]),
             ..Default::default()
         }),
@@ -555,6 +555,7 @@ impl Server {
             SelectionRangeRequest::METHOD => self.selection_range(request),
             HoverRequest::METHOD => self.hover(request),
             Completion::METHOD => self.completion(request),
+            ResolveCompletionItem::METHOD => self.resolve_completion_item(request),
             SignatureHelpRequest::METHOD => self.signature_help(request),
             InlayHintRequest::METHOD => self.inlay_hint(request),
             CodeLensRequest::METHOD => self.code_lens(request),
@@ -940,6 +941,15 @@ impl Server {
             });
         }
         self.send_response(Response::new_ok(id, CompletionResponse::Array(items)))
+    }
+
+    fn resolve_completion_item(&mut self, request: Request) -> Result<()> {
+        let (id, mut item): (RequestId, lsp_types::CompletionItem) =
+            request.extract(ResolveCompletionItem::METHOD)?;
+        if item.documentation.is_none() && item.kind == Some(CompletionItemKind::MODULE) {
+            item.documentation = self.module_completion_documentation(&item.label, true);
+        }
+        self.send_response(Response::new_ok(id, item))
     }
 
     fn signature_help(&mut self, request: Request) -> Result<()> {
@@ -1547,8 +1557,29 @@ impl Server {
         if item.kind != zuzu_analysis::CompletionKind::Module {
             return None;
         }
-        let path = self.analyzer.workspace().resolve_module_path(&item.label)?;
-        let markdown = self.doc_cache.get(&path).cloned().flatten()?;
+        let markdown = self.cached_module_documentation(&item.label)?;
+        Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: markdown,
+        }))
+    }
+
+    fn cached_module_documentation(&self, module: &str) -> Option<String> {
+        let path = self.analyzer.workspace().resolve_module_path(module)?;
+        self.doc_cache.get(&path).cloned().flatten()
+    }
+
+    fn module_completion_documentation(
+        &mut self,
+        module: &str,
+        render_if_missing: bool,
+    ) -> Option<Documentation> {
+        let path = self.analyzer.workspace().resolve_module_path(module)?;
+        let markdown = if render_if_missing {
+            self.documentation_markdown(&path)?
+        } else {
+            self.doc_cache.get(&path).cloned().flatten()?
+        };
         Some(Documentation::MarkupContent(MarkupContent {
             kind: MarkupKind::Markdown,
             value: markdown,

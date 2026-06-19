@@ -141,6 +141,10 @@ exit 0
         initialize["result"]["capabilities"]["diagnosticProvider"]["workspaceDiagnostics"],
         true
     );
+    assert_eq!(
+        initialize["result"]["capabilities"]["completionProvider"]["resolveProvider"],
+        true
+    );
     let semantic_token_types = initialize["result"]["capabilities"]["semanticTokensProvider"]
         ["legend"]["tokenTypes"]
         .as_array()
@@ -242,6 +246,26 @@ exit 0
     assert_no_completion_documentation(&completion, "example/math");
     assert_no_completion_documentation(&completion, "configured/module");
     assert!(!pod_parse_marker.exists());
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 47,
+            "method": "completionItem/resolve",
+            "params": completion_item(&completion, "example/math")
+        }),
+    );
+    let resolved_completion = read_response(&mut reader, 47);
+    assert_eq!(
+        resolved_completion["result"]["documentation"]["kind"],
+        "markdown"
+    );
+    assert!(resolved_completion["result"]["documentation"]["value"]
+        .as_str()
+        .unwrap()
+        .contains("Fixture arithmetic helpers"));
+    assert!(pod_parse_marker.exists());
 
     send(
         &mut stdin,
