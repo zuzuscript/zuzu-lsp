@@ -1793,7 +1793,12 @@ impl Document {
             "variable_declaration" => {
                 self.collect_named_symbol(node, SymbolKind::Variable, "variable")
             }
-            "parameter" => self.collect_named_symbol(node, SymbolKind::Parameter, "parameter"),
+            "let_expression" | "catch_clause" | "for_statement" => {
+                self.collect_named_symbol(node, SymbolKind::Variable, "variable")
+            }
+            "parameter" | "lambda_parameter" => {
+                self.collect_named_symbol(node, SymbolKind::Parameter, "parameter")
+            }
             _ => {}
         }
 
@@ -1913,9 +1918,18 @@ impl Document {
 
     fn symbol_scope_range(&self, node: Node, kind: &SymbolKind) -> Option<Range> {
         match kind {
-            SymbolKind::Parameter => {
-                self.enclosing_range(node, &["function_declaration", "method_declaration"])
-            }
+            SymbolKind::Parameter => self.enclosing_range(
+                node,
+                &[
+                    "function_declaration",
+                    "method_declaration",
+                    "lambda_expression",
+                ],
+            ),
+            SymbolKind::Variable if matches!(node.kind(), "catch_clause" | "for_statement") => node
+                .child_by_field_name("body")
+                .map(|body| self.node_range(body))
+                .or_else(|| Some(self.node_range(node))),
             SymbolKind::Variable => self.enclosing_range(
                 node,
                 &[
@@ -3689,6 +3703,47 @@ mod tests {
         let _ = fs::remove_dir(module_dir);
         let _ = fs::remove_dir(root.join("modules"));
         let _ = fs::remove_dir(root);
+    }
+
+    #[test]
+    fn completes_special_local_binding_forms_in_scope() {
+        let mut analyzer = Analyzer::new(Vec::new());
+        analyzer.upsert_document(
+            "file:///example.zzs",
+            concat!(
+                "function helper(items) {\n",
+                "\tfor (let item in items) {\n",
+                "\t\titem;\n",
+                "\t}\n",
+                "\ttry {\n",
+                "\t\tdie \"x\";\n",
+                "\t} catch (Any err) {\n",
+                "\t\terr;\n",
+                "\t}\n",
+                "\tlet cb := fn callback_value -> callback_value;\n",
+                "}\n",
+            ),
+        );
+
+        let for_body = analyzer.completions("file:///example.zzs", Position::new(2, 3));
+        assert!(for_body
+            .iter()
+            .any(|item| item.label == "item" && item.kind == CompletionKind::Variable));
+        assert!(for_body
+            .iter()
+            .any(|item| item.label == "items" && item.kind == CompletionKind::Parameter));
+        assert!(!for_body.iter().any(|item| item.label == "err"));
+
+        let catch_body = analyzer.completions("file:///example.zzs", Position::new(7, 3));
+        assert!(catch_body
+            .iter()
+            .any(|item| item.label == "err" && item.kind == CompletionKind::Variable));
+        assert!(!catch_body.iter().any(|item| item.label == "item"));
+
+        let lambda_body = analyzer.completions("file:///example.zzs", Position::new(9, 38));
+        assert!(lambda_body.iter().any(|item| {
+            item.label == "callback_value" && item.kind == CompletionKind::Parameter
+        }));
     }
 
     #[test]
