@@ -18,9 +18,13 @@ fn serves_basic_stdio_requests() {
         &tool_root.join("zuzuprove"),
         "printf 'tested %s\\n' \"$1\"\n",
     );
+    let pod_parse_marker = tool_root.join("pod-parse-ran");
     write_fake_command(
         &tool_root.join("pod_parse"),
-        "printf '# NAME\\n\\nFixture arithmetic helpers\\n\\n## add\\n\\nAdds two values.\\n\\n## Calculator\\n\\nCalculator class docs.\\n\\nrendered %s %s %s\\n' \"$1\" \"$2\" \"$3\"\n",
+        &format!(
+            "printf ran > '{}'\nprintf '# NAME\\n\\nFixture arithmetic helpers\\n\\n## add\\n\\nAdds two values.\\n\\n## Calculator\\n\\nCalculator class docs.\\n\\nrendered %s %s %s\\n' \"$1\" \"$2\" \"$3\"\n",
+            pod_parse_marker.display()
+        ),
     );
     write_fake_command(
         &tool_root.join("zuzubox"),
@@ -235,8 +239,9 @@ exit 0
         "configured/module",
         lsp_types::CompletionItemKind::MODULE,
     );
-    assert_completion_documentation(&completion, "example/math", "Fixture arithmetic helpers");
+    assert_no_completion_documentation(&completion, "example/math");
     assert_no_completion_documentation(&completion, "configured/module");
+    assert!(!pod_parse_marker.exists());
 
     send(
         &mut stdin,
@@ -379,6 +384,7 @@ exit 0
         .as_str()
         .unwrap()
         .contains("Fixture arithmetic helpers"));
+    assert!(pod_parse_marker.exists());
 
     send(
         &mut stdin,
@@ -402,6 +408,25 @@ exit 0
         .as_str()
         .unwrap()
         .contains("Calculator class docs."));
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 46,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": { "line": 3, "character": 5 }
+            }
+        }),
+    );
+    let cached_completion = read_response(&mut reader, 46);
+    assert_completion_documentation(
+        &cached_completion,
+        "example/math",
+        "Fixture arithmetic helpers",
+    );
 
     let incremental_uri = Url::from_file_path(root.join("scripts").join("incremental.zzs"))
         .unwrap()
@@ -1578,6 +1603,7 @@ exit 0
     let _ = std::fs::remove_file(tool_root.join("pod_parse"));
     let _ = std::fs::remove_file(tool_root.join("zuzubox"));
     let _ = std::fs::remove_file(tool_root.join("zuzu"));
+    let _ = std::fs::remove_file(pod_parse_marker);
     let _ = std::fs::remove_dir(tool_root);
 
     shutdown(&mut child, stdin, &mut reader);

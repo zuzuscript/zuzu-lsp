@@ -503,16 +503,11 @@ impl Server {
             roots.clone(),
             configured_module_roots(&settings, &toolchain),
         );
-        let doc_cache = if workspace_trusted {
-            workspace_documentation_index(&analyzer, &toolchain)
-        } else {
-            HashMap::new()
-        };
         Self {
             analyzer,
             toolchain,
             settings,
-            doc_cache,
+            doc_cache: HashMap::new(),
             text_documents: HashMap::new(),
             queued_messages: VecDeque::new(),
             cancelled_requests: BTreeSet::new(),
@@ -720,11 +715,7 @@ impl Server {
             roots,
             configured_module_roots(&self.settings, &self.toolchain),
         );
-        self.doc_cache = if self.workspace_trusted {
-            workspace_documentation_index(&self.analyzer, &self.toolchain)
-        } else {
-            HashMap::new()
-        };
+        self.doc_cache.clear();
 
         let open_documents: Vec<(String, String, Option<i32>, bool, bool)> = self
             .text_documents
@@ -1702,30 +1693,6 @@ fn package_toolchain_diagnostics(toolchain: &Toolchain) -> Vec<Diagnostic> {
     }
 
     diagnostics
-}
-
-fn workspace_documentation_index(
-    analyzer: &Analyzer,
-    toolchain: &Toolchain,
-) -> HashMap<PathBuf, Option<String>> {
-    workspace_documentation_paths(analyzer)
-        .into_iter()
-        .map(|path| {
-            let rendered = toolchain.render_pod_markdown(&path).ok().flatten();
-            (path, rendered)
-        })
-        .collect()
-}
-
-fn workspace_documentation_paths(analyzer: &Analyzer) -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = analyzer
-        .workspace()
-        .known_modules()
-        .filter_map(|module| analyzer.workspace().resolve_module_path(module))
-        .collect();
-    paths.sort();
-    paths.dedup();
-    paths
 }
 
 fn toolchain_diagnostic(code: &'static str, message: impl Into<String>) -> Diagnostic {
@@ -2889,61 +2856,5 @@ mod tests {
             configured_module_roots(&settings, &toolchain),
             vec![configured, runtime, installed]
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn indexes_workspace_module_documentation() {
-        let root = unique_temp_dir("zuzu-lsp-doc-index");
-        let modules = root.join("modules").join("example");
-        std::fs::create_dir_all(&modules).unwrap();
-        let module = modules.join("doc.zzm");
-        std::fs::write(&module, "=pod\n\n=head1 NAME\n\nexample/doc\n").unwrap();
-
-        let renderer = root.join("pod_parse");
-        write_fake_command(
-            &renderer,
-            "if [ \"$1\" != -f ] || [ \"$2\" != markdown ]; then exit 9; fi\n\
-             printf 'rendered %s\\n' \"$3\"\n",
-        );
-
-        let analyzer = Analyzer::new(vec![root.clone()]);
-        let toolchain = Toolchain {
-            pod_parse: Some(renderer.clone()),
-            ..Default::default()
-        };
-        let index = workspace_documentation_index(&analyzer, &toolchain);
-
-        assert_eq!(
-            index.get(&module).cloned().flatten(),
-            Some(
-                format!("rendered {}\n", module.display())
-                    .trim()
-                    .to_string()
-            )
-        );
-
-        let _ = std::fs::remove_file(renderer);
-        let _ = std::fs::remove_file(module);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    fn unique_temp_dir(prefix: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("{}-{}", prefix, std::process::id()))
-    }
-
-    #[cfg(unix)]
-    fn write_fake_command(path: &Path, body: &str) {
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
-
-        let mut file = std::fs::File::create(path).unwrap();
-        write!(file, "#!/bin/sh\n{body}").unwrap();
-        file.sync_all().unwrap();
-        drop(file);
-
-        let mut permissions = std::fs::metadata(path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(path, permissions).unwrap();
     }
 }
