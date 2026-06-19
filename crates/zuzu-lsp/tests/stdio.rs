@@ -1574,6 +1574,9 @@ fn refuses_tool_execution_in_untrusted_workspace() {
     ));
     std::fs::create_dir_all(&tool_root).unwrap();
     let pod_parse_marker = tool_root.join("pod-parse-ran");
+    let tidy_marker = tool_root.join("tidy-ran");
+    let prove_marker = tool_root.join("prove-ran");
+    let box_marker = tool_root.join("box-ran");
     write_fake_command(
         &tool_root.join("pod_parse"),
         &format!(
@@ -1581,7 +1584,24 @@ fn refuses_tool_execution_in_untrusted_workspace() {
             pod_parse_marker.display()
         ),
     );
-    write_fake_command(&tool_root.join("zuzu-tidy.pl"), "cat\n");
+    write_fake_command(
+        &tool_root.join("zuzu-tidy.pl"),
+        &format!("printf ran > '{}'\ncat\n", tidy_marker.display()),
+    );
+    write_fake_command(
+        &tool_root.join("zuzuprove"),
+        &format!(
+            "printf ran > '{}'\nprintf 'tested %s\\n' \"$1\"\n",
+            prove_marker.display()
+        ),
+    );
+    write_fake_command(
+        &tool_root.join("zuzubox"),
+        &format!(
+            "printf ran > '{}'\nprintf 'boxed %s %s\\n' \"$1\" \"$2\"\n",
+            box_marker.display()
+        ),
+    );
     let test_path = std::env::join_paths([tool_root.clone()]).unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_zuzu-lsp"))
@@ -1689,6 +1709,9 @@ fn refuses_tool_execution_in_untrusted_workspace() {
         .unwrap()
         .contains("untrusted"));
     assert!(!pod_parse_marker.exists());
+    assert!(!tidy_marker.exists());
+    assert!(!prove_marker.exists());
+    assert!(!box_marker.exists());
 
     send(
         &mut stdin,
@@ -1708,25 +1731,62 @@ fn refuses_tool_execution_in_untrusted_workspace() {
         .unwrap()
         .contains("ZuzuScript import"));
     assert!(!pod_parse_marker.exists());
+    assert!(!tidy_marker.exists());
+    assert!(!prove_marker.exists());
+    assert!(!box_marker.exists());
 
-    send(
-        &mut stdin,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "workspace/executeCommand",
-            "params": {
-                "command": "zuzu.testFile",
-                "arguments": [uri]
-            }
-        }),
-    );
-    let test_command = read_response(&mut reader, 4);
-    assert!(test_command["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("untrusted"));
-    assert!(!pod_parse_marker.exists());
+    for (id, command, arguments) in [
+        (4, "zuzu.formatDocument", json!([uri])),
+        (6, "zuzu.testFile", json!([uri])),
+        (
+            7,
+            "zuzu.testWorkspace",
+            json!([Url::from_file_path(root.join("zuzu-distribution.json"))
+                .unwrap()
+                .to_string()]),
+        ),
+        (
+            8,
+            "zuzu.renderDocs",
+            json!([
+                Url::from_file_path(root.join("modules").join("example").join("math.zzm"))
+                    .unwrap()
+                    .to_string()
+            ]),
+        ),
+        (
+            9,
+            "zuzu.verifyPackage",
+            json!([Url::from_file_path(root.join("zuzu-distribution.json"))
+                .unwrap()
+                .to_string()]),
+        ),
+    ] {
+        send(
+            &mut stdin,
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "workspace/executeCommand",
+                "params": {
+                    "command": command,
+                    "arguments": arguments
+                }
+            }),
+        );
+        let command_response = read_response(&mut reader, id);
+        assert!(
+            command_response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("untrusted"),
+            "{command} should be refused in untrusted workspaces: {command_response}"
+        );
+        assert!(!pod_parse_marker.exists());
+        assert!(!tidy_marker.exists());
+        assert!(!prove_marker.exists());
+        assert!(!box_marker.exists());
+    }
 
     shutdown(&mut child, stdin, &mut reader);
     let _ = std::fs::remove_dir_all(tool_root);
