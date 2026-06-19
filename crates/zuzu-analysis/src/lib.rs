@@ -288,7 +288,14 @@ struct Import {
 #[derive(Debug, Clone)]
 struct ImportedName {
     name: String,
+    source_name: String,
     range: Range,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ImportTarget<'a> {
+    module: &'a str,
+    name: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -689,8 +696,8 @@ impl Analyzer {
         let document = self.document(uri)?;
         let word = document.word_at(position)?;
         if let Some(symbol) = document
-            .import_module_for_name(&word)
-            .and_then(|module| self.symbol_in_module(module, &word))
+            .import_target_for_name(&word)
+            .and_then(|target| self.symbol_in_module(target.module, target.name))
         {
             return Some(Location {
                 uri: symbol.uri.clone(),
@@ -1853,13 +1860,15 @@ impl Document {
             loop {
                 let specifier = cursor.node();
                 if specifier.kind() == "import_specifier" {
-                    if let Some(local) = specifier
-                        .child_by_field_name("alias")
-                        .or_else(|| specifier.child_by_field_name("name"))
-                    {
-                        if let Ok(name) = local.utf8_text(self.text.as_bytes()) {
+                    if let Some(source) = specifier.child_by_field_name("name") {
+                        let local = specifier.child_by_field_name("alias").unwrap_or(source);
+                        if let (Ok(source_name), Ok(name)) = (
+                            source.utf8_text(self.text.as_bytes()),
+                            local.utf8_text(self.text.as_bytes()),
+                        ) {
                             names.push(ImportedName {
                                 name: name.to_string(),
+                                source_name: source_name.to_string(),
                                 range: self.node_range(local),
                             });
                         }
@@ -2488,13 +2497,14 @@ impl Document {
         self.symbols.iter()
     }
 
-    fn import_module_for_name(&self, name: &str) -> Option<&str> {
+    fn import_target_for_name(&self, name: &str) -> Option<ImportTarget<'_>> {
         self.imports.iter().find_map(|import| {
-            import
-                .imported_names
-                .iter()
-                .any(|imported| imported.name == name)
-                .then_some(import.module.as_str())
+            import.imported_names.iter().find_map(|imported| {
+                (imported.name == name).then_some(ImportTarget {
+                    module: import.module.as_str(),
+                    name: imported.source_name.as_str(),
+                })
+            })
         })
     }
 
@@ -3593,10 +3603,10 @@ mod tests {
         analyzer.upsert_document(
             "file:///example.zzs",
             concat!(
-                "from demo/tools import exported;\n",
+                "from demo/tools import exported as local_export;\n",
                 "function helper(first, second) {\n",
                 "\tlet total := first + second;\n",
-                "\ttotal\n",
+                "\tlocal_export;\n",
                 "}\n",
             ),
         );
@@ -3613,10 +3623,15 @@ mod tests {
             .any(|item| { item.label == "total" && item.kind == CompletionKind::Variable }));
         assert!(completions
             .iter()
-            .any(|item| { item.label == "exported" && item.kind == CompletionKind::Import }));
+            .any(|item| { item.label == "local_export" && item.kind == CompletionKind::Import }));
         assert!(completions
             .iter()
             .any(|item| { item.label == "demo/tools" && item.kind == CompletionKind::Module }));
+
+        let definition = analyzer
+            .definition("file:///example.zzs", Position::new(3, 3))
+            .expect("definition for import alias");
+        assert!(definition.uri.ends_with("/modules/demo/tools.zzm"));
 
         let _ = fs::remove_file(module_dir.join("tools.zzm"));
         let _ = fs::remove_dir(module_dir);
