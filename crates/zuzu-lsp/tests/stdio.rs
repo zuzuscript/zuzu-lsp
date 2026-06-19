@@ -1839,8 +1839,7 @@ fn publishes_distribution_metadata_diagnostics() {
         std::env::temp_dir().join(format!("zuzu-lsp-bad-metadata-root-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let metadata_path = root.join("zuzu-distribution.json");
-    let valid_metadata =
-        "{\n\t\"name\": \"live-metadata\",\n\t\"version\": \"0.0.1\",\n\t\"dependencies\": {}\n}\n";
+    let valid_metadata = "{\n\t\"name\": \"live-metadata\",\n\t\"version\": \"0.0.1\",\n\t\"author\": \"Example Author\",\n\t\"license\": \"MIT\",\n\t\"abstract\": \"Live metadata fixture.\",\n\t\"dependencies\": {}\n}\n";
     std::fs::write(&metadata_path, valid_metadata).unwrap();
     let metadata_uri = Url::from_file_path(&metadata_path).unwrap().to_string();
 
@@ -1946,7 +1945,7 @@ fn publishes_distribution_metadata_toolchain_diagnostics() {
     ));
     std::fs::create_dir_all(&home).unwrap();
     let metadata_path = root.join("zuzu-distribution.json");
-    let metadata_text = "{\n\t\"name\": \"missing-tools\",\n\t\"dependencies\": {}\n}\n";
+    let metadata_text = "{\n\t\"name\": \"missing-tools\",\n\t\"version\": \"0.0.1\",\n\t\"author\": \"Example Author\",\n\t\"license\": \"MIT\",\n\t\"abstract\": \"Missing package tool fixture.\",\n\t\"dependencies\": {}\n}\n";
     std::fs::write(&metadata_path, metadata_text).unwrap();
     let metadata_uri = Url::from_file_path(&metadata_path).unwrap().to_string();
 

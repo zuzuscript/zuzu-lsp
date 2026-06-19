@@ -1,6 +1,9 @@
 {
 	"name": "basic-lsp-fixture",
 	"version": "0.0.1",
+	"author": "ZuzuScript",
+	"license": "MIT",
+	"abstract": "Basic Zuzu LSP fixture.",
 	"dependencies": {
 		"example/math": "0"
 	}

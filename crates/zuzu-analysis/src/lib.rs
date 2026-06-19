@@ -1362,22 +1362,79 @@ fn distribution_metadata_from_text(text: &str) -> (BTreeSet<String>, Vec<Diagnos
         );
     };
     let mut diagnostics = Vec::new();
-    for required in ["name", "version"] {
+    for required in ["name", "version", "author", "license"] {
         if metadata
             .get(required)
             .and_then(|value| value.as_str())
-            .is_none_or(str::is_empty)
+            .is_none_or(|value| value.trim().is_empty())
         {
             diagnostics.push(metadata_diagnostic(
                 match required {
                     "name" => "metadata-missing-name",
                     "version" => "metadata-missing-version",
+                    "author" => "metadata-missing-author",
+                    "license" => "metadata-missing-license",
                     _ => unreachable!(),
                 },
                 format!("zuzu-distribution.json must include a non-empty `{required}` string"),
                 full_text_range(text),
             ));
         }
+    }
+    if let Some(name) = metadata.get("name").and_then(|value| value.as_str()) {
+        if !dist_name_ok(name) {
+            diagnostics.push(metadata_diagnostic(
+                "metadata-invalid-name",
+                "zuzu-distribution.json name must match the ZDF-1 distribution name pattern",
+                full_text_range(text),
+            ));
+        }
+    }
+    if let Some(version) = metadata.get("version").and_then(|value| value.as_str()) {
+        if !version_ok(version) {
+            diagnostics.push(metadata_diagnostic(
+                "metadata-invalid-version",
+                "zuzu-distribution.json version must match the ZDF-1 version pattern",
+                full_text_range(text),
+            ));
+        }
+    }
+    if let Some(status) = metadata.get("status") {
+        if status
+            .as_str()
+            .is_none_or(|status| status != "stable" && status != "trial")
+        {
+            diagnostics.push(metadata_diagnostic(
+                "metadata-invalid-status",
+                "zuzu-distribution.json status must be `stable` or `trial`",
+                full_text_range(text),
+            ));
+        }
+    }
+    if let Some(repo) = metadata.get("repo") {
+        if repo.as_str().is_none_or(|repo| !url_ok(repo)) {
+            diagnostics.push(metadata_diagnostic(
+                "metadata-invalid-repo",
+                "zuzu-distribution.json repo must be a valid http/https URL",
+                full_text_range(text),
+            ));
+        }
+    }
+    match metadata.get("abstract") {
+        Some(abstract_text)
+            if abstract_text
+                .as_str()
+                .is_some_and(|abstract_text| abstract_text.chars().count() <= 140) => {}
+        Some(_) => diagnostics.push(metadata_warning(
+            "metadata-invalid-abstract",
+            "zuzu-distribution.json abstract should be a string of 140 characters or fewer",
+            full_text_range(text),
+        )),
+        None => diagnostics.push(metadata_warning(
+            "metadata-missing-abstract",
+            "zuzu-distribution.json should include an upload-friendly abstract",
+            full_text_range(text),
+        )),
     }
     let Some(dependencies) = metadata.get("dependencies") else {
         return (BTreeSet::new(), diagnostics);
@@ -1392,14 +1449,17 @@ fn distribution_metadata_from_text(text: &str) -> (BTreeSet<String>, Vec<Diagnos
     };
     let dependency_diagnostic_count = diagnostics.len();
     for (name, version) in dependencies {
-        if name.is_empty() {
+        if !module_name_ok(name) {
             diagnostics.push(metadata_diagnostic(
                 "metadata-invalid-dependency-name",
-                "zuzu-distribution.json dependency names must be non-empty strings",
+                "zuzu-distribution.json dependency names must match the ZDF-1 module name pattern",
                 full_text_range(text),
             ));
         }
-        if version.as_str().is_none_or(|version| version.is_empty()) {
+        if version
+            .as_str()
+            .is_none_or(|version| version.trim().is_empty())
+        {
             diagnostics.push(metadata_diagnostic(
                 "metadata-invalid-dependency-version",
                 "zuzu-distribution.json dependency versions must be non-empty strings",
@@ -1413,10 +1473,63 @@ fn distribution_metadata_from_text(text: &str) -> (BTreeSet<String>, Vec<Diagnos
     (dependencies.keys().cloned().collect(), diagnostics)
 }
 
+fn dist_name_ok(name: &str) -> bool {
+    name.len() <= 128
+        && name
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn version_ok(version: &str) -> bool {
+    version.len() <= 64
+        && version
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b'-'))
+}
+
+fn module_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name.split('/').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        })
+}
+
+fn url_ok(url: &str) -> bool {
+    url.len() <= 1024
+        && !url.chars().any(char::is_whitespace)
+        && Url::parse(url)
+            .ok()
+            .is_some_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
+}
+
 fn metadata_diagnostic(code: &'static str, message: impl Into<String>, range: Range) -> Diagnostic {
+    metadata_diagnostic_with_severity(code, message, range, DiagnosticSeverity::Error)
+}
+
+fn metadata_warning(code: &'static str, message: impl Into<String>, range: Range) -> Diagnostic {
+    metadata_diagnostic_with_severity(code, message, range, DiagnosticSeverity::Warning)
+}
+
+fn metadata_diagnostic_with_severity(
+    code: &'static str,
+    message: impl Into<String>,
+    range: Range,
+    severity: DiagnosticSeverity,
+) -> Diagnostic {
     Diagnostic {
         range,
-        severity: DiagnosticSeverity::Error,
+        severity,
         source: "zuzu-package",
         code,
         message: message.into(),
@@ -3672,7 +3785,7 @@ mod tests {
         fs::create_dir_all(external.join("dep")).unwrap();
         fs::write(
             root.join("zuzu-distribution.json"),
-            "{\n\t\"name\": \"missing-dependency-fixture\",\n\t\"version\": \"0.0.1\"\n}\n",
+            "{\n\t\"name\": \"missing-dependency-fixture\",\n\t\"version\": \"0.0.1\",\n\t\"author\": \"Example Author\",\n\t\"license\": \"MIT\",\n\t\"abstract\": \"Missing dependency fixture.\"\n}\n",
         )
         .unwrap();
         fs::write(external.join("dep").join("stuff.zzm"), "class Thing;\n").unwrap();
@@ -3701,7 +3814,7 @@ mod tests {
 
         fs::write(
             root.join("zuzu-distribution.json"),
-            "{\n\t\"name\": \"missing-dependency-fixture\",\n\t\"version\": \"0.0.1\",\n\t\"dependencies\": {\n\t\t\"dep\": \"0\"\n\t}\n}\n",
+            "{\n\t\"name\": \"missing-dependency-fixture\",\n\t\"version\": \"0.0.1\",\n\t\"author\": \"Example Author\",\n\t\"license\": \"MIT\",\n\t\"abstract\": \"Missing dependency fixture.\",\n\t\"dependencies\": {\n\t\t\"dep\": \"0\"\n\t}\n}\n",
         )
         .unwrap();
         let analyzer = Analyzer::with_module_roots(vec![root.clone()], vec![external.clone()]);
@@ -3726,7 +3839,7 @@ mod tests {
         fs::create_dir_all(root.join("scripts")).unwrap();
         fs::write(
             root.join("zuzu-distribution.json"),
-            "{\n\t\"name\": \"package-report-fixture\",\n\t\"version\": \"0.0.1\",\n\t\"dependencies\": {\n\t\t\"dep\": \"0\"\n\t}\n}\n",
+            "{\n\t\"name\": \"package-report-fixture\",\n\t\"version\": \"0.0.1\",\n\t\"author\": \"Example Author\",\n\t\"license\": \"MIT\",\n\t\"abstract\": \"Package report fixture.\",\n\t\"dependencies\": {\n\t\t\"dep\": \"0\"\n\t}\n}\n",
         )
         .unwrap();
         fs::write(
@@ -3809,12 +3922,18 @@ mod tests {
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "metadata-missing-version"));
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "metadata-missing-author"));
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "metadata-missing-license"));
         let report = analyzer.package_report(Some(&root.join("zuzu-distribution.json")));
         assert_eq!(report.dependencies, vec!["dep"]);
 
         fs::write(
             root.join("zuzu-distribution.json"),
-            "{\n\t\"name\": \"bad-metadata\",\n\t\"dependencies\": {\n\t\t\"\": \"0\",\n\t\t\"dep\": 1\n\t}\n}\n",
+            "{\n\t\"name\": \"bad-metadata\",\n\t\"version\": \"0.0.1\",\n\t\"author\": \"Example Author\",\n\t\"license\": \"MIT\",\n\t\"abstract\": \"Bad dependency fixture.\",\n\t\"dependencies\": {\n\t\t\"\": \"0\",\n\t\t\"dep\": 1\n\t}\n}\n",
         )
         .unwrap();
         let analyzer = Analyzer::new(vec![root.clone()]);
@@ -3825,6 +3944,31 @@ mod tests {
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "metadata-invalid-dependency-version"));
+
+        fs::write(
+            root.join("zuzu-distribution.json"),
+            "{\n\t\"name\": \"-bad-metadata\",\n\t\"version\": \"-0.0.1\",\n\t\"author\": \"Example Author\",\n\t\"license\": \"MIT\",\n\t\"status\": \"ancient\",\n\t\"repo\": \"ftp://example.test/repo\",\n\t\"abstract\": 42,\n\t\"dependencies\": {\n\t\t\"bad//dep\": \"0\"\n\t}\n}\n",
+        )
+        .unwrap();
+        let analyzer = Analyzer::new(vec![root.clone()]);
+        let diagnostics = analyzer.diagnostics(&metadata_uri);
+        for code in [
+            "metadata-invalid-name",
+            "metadata-invalid-version",
+            "metadata-invalid-status",
+            "metadata-invalid-repo",
+            "metadata-invalid-abstract",
+            "metadata-invalid-dependency-name",
+        ] {
+            assert!(
+                diagnostics.iter().any(|diagnostic| diagnostic.code == code),
+                "expected diagnostic code {code}, got {diagnostics:?}"
+            );
+        }
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "metadata-invalid-abstract"
+                && diagnostic.severity == DiagnosticSeverity::Warning
+        }));
 
         let _ = fs::remove_file(root.join("zuzu-distribution.json"));
         let _ = fs::remove_dir(root.join("scripts"));
