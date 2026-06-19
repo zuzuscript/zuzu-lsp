@@ -288,6 +288,7 @@ struct Import {
 #[derive(Debug, Clone)]
 struct ImportedName {
     name: String,
+    range: Range,
 }
 
 #[derive(Debug, Clone)]
@@ -687,6 +688,15 @@ impl Analyzer {
     pub fn definition(&self, uri: &str, position: Position) -> Option<Location> {
         let document = self.document(uri)?;
         let word = document.word_at(position)?;
+        if let Some(symbol) = document
+            .import_module_for_name(&word)
+            .and_then(|module| self.symbol_in_module(module, &word))
+        {
+            return Some(Location {
+                uri: symbol.uri.clone(),
+                range: symbol.selection_range,
+            });
+        }
         document
             .symbols
             .iter()
@@ -701,6 +711,14 @@ impl Analyzer {
                 uri: symbol.uri.clone(),
                 range: symbol.selection_range,
             })
+    }
+
+    fn symbol_in_module(&self, module: &str, name: &str) -> Option<&Symbol> {
+        let uri = self.workspace.resolve_module_uri(module)?;
+        self.document(&uri)?
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == name)
     }
 
     pub fn references(
@@ -1777,13 +1795,14 @@ impl Document {
         if let Some(module) = node.child_by_field_name("module") {
             if let Ok(name) = module.utf8_text(self.text.as_bytes()) {
                 let range = self.node_range(module);
+                let imported_names = self.imported_names(node);
                 self.imports.push(Import {
                     module: name.to_string(),
                     module_range: range,
                     try_range: self.import_try_range(node),
                     statement_range: self.node_range(node),
                     delete_range: self.line_delete_range(self.node_range(node)),
-                    imported_names: self.imported_names(node),
+                    imported_names: imported_names.clone(),
                 });
                 self.symbols.push(Symbol {
                     name: name.to_string(),
@@ -1793,6 +1812,16 @@ impl Document {
                     detail: Some("import".to_string()),
                     uri: self.uri.clone(),
                 });
+                for imported in imported_names {
+                    self.symbols.push(Symbol {
+                        name: imported.name,
+                        kind: SymbolKind::Import,
+                        range: self.node_range(node),
+                        selection_range: imported.range,
+                        detail: Some(format!("import from {name}")),
+                        uri: self.uri.clone(),
+                    });
+                }
             }
         }
     }
@@ -1831,6 +1860,7 @@ impl Document {
                         if let Ok(name) = local.utf8_text(self.text.as_bytes()) {
                             names.push(ImportedName {
                                 name: name.to_string(),
+                                range: self.node_range(local),
                             });
                         }
                     }
@@ -2456,6 +2486,16 @@ impl Document {
 
     fn visible_symbols(&self, _position: Position) -> impl Iterator<Item = &Symbol> {
         self.symbols.iter()
+    }
+
+    fn import_module_for_name(&self, name: &str) -> Option<&str> {
+        self.imports.iter().find_map(|import| {
+            import
+                .imported_names
+                .iter()
+                .any(|imported| imported.name == name)
+                .then_some(import.module.as_str())
+        })
     }
 
     fn symbol_at(&self, position: Position) -> Option<&Symbol> {
@@ -3553,6 +3593,7 @@ mod tests {
         analyzer.upsert_document(
             "file:///example.zzs",
             concat!(
+                "from demo/tools import exported;\n",
                 "function helper(first, second) {\n",
                 "\tlet total := first + second;\n",
                 "\ttotal\n",
@@ -3560,7 +3601,7 @@ mod tests {
             ),
         );
 
-        let completions = analyzer.completions("file:///example.zzs", Position::new(2, 3));
+        let completions = analyzer.completions("file:///example.zzs", Position::new(3, 3));
         assert!(completions
             .iter()
             .any(|item| { item.label == "helper" && item.kind == CompletionKind::Function }));
@@ -3570,6 +3611,9 @@ mod tests {
         assert!(completions
             .iter()
             .any(|item| { item.label == "total" && item.kind == CompletionKind::Variable }));
+        assert!(completions
+            .iter()
+            .any(|item| { item.label == "exported" && item.kind == CompletionKind::Import }));
         assert!(completions
             .iter()
             .any(|item| { item.label == "demo/tools" && item.kind == CompletionKind::Module }));
