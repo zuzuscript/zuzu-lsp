@@ -353,6 +353,7 @@ fn request_id_from_number_or_string(id: NumberOrString) -> RequestId {
 fn configured_module_roots(settings: &ServerSettings, toolchain: &Toolchain) -> Vec<PathBuf> {
     let mut roots = settings.module_roots.clone();
     roots.extend(toolchain.module_search_paths.clone());
+    roots.extend(toolchain.installed_modules.clone());
     dedup_path_order(&mut roots);
     roots
 }
@@ -2712,6 +2713,27 @@ mod tests {
         assert!(package_diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "missing-package-verifier"));
+    }
+
+    #[test]
+    fn module_roots_include_discovered_installed_modules() {
+        let configured = PathBuf::from("/workspace/vendor/modules");
+        let runtime = PathBuf::from("/runtime/modules");
+        let installed = PathBuf::from("/home/example/.zuzu/modules");
+        let settings = ServerSettings {
+            module_roots: vec![configured.clone()],
+            runtime_parser_diagnostics: true,
+        };
+        let toolchain = Toolchain {
+            module_search_paths: vec![runtime.clone(), installed.clone()],
+            installed_modules: vec![installed.clone()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            configured_module_roots(&settings, &toolchain),
+            vec![configured, runtime, installed]
+        );
     }
 
     #[cfg(unix)]
