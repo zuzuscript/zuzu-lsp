@@ -705,10 +705,18 @@ impl Analyzer {
     pub fn definition(&self, uri: &str, position: Position) -> Option<Location> {
         let document = self.document(uri)?;
         let word = document.word_at(position)?;
-        if let Some(symbol) = document
-            .import_target_for_name(&word)
-            .and_then(|target| self.symbol_in_module(target.module, target.name))
-        {
+        if let Some(symbol) = document.visible_symbol_named_at(&word, position) {
+            if symbol.kind == SymbolKind::Import {
+                if let Some(symbol) = document
+                    .import_target_for_name(&word)
+                    .and_then(|target| self.symbol_in_module(target.module, target.name))
+                {
+                    return Some(Location {
+                        uri: symbol.uri.clone(),
+                        range: symbol.selection_range,
+                    });
+                }
+            }
             return Some(Location {
                 uri: symbol.uri.clone(),
                 range: symbol.selection_range,
@@ -738,6 +746,12 @@ impl Analyzer {
             .find(|symbol| symbol.name == name)
     }
 
+    fn symbol_for_location(&self, location: &Location) -> Option<(&Document, &Symbol)> {
+        let document = self.document(&location.uri)?;
+        let symbol = document.symbol_by_selection_range(location.range)?;
+        Some((document, symbol))
+    }
+
     pub fn references(
         &self,
         uri: &str,
@@ -751,6 +765,20 @@ impl Analyzer {
             return Vec::new();
         };
         let declaration = self.definition(uri, position);
+
+        if let Some((document, symbol)) = declaration
+            .as_ref()
+            .and_then(|declaration| self.symbol_for_location(declaration))
+            .filter(|(_, symbol)| symbol.scope_range.is_some())
+        {
+            return scoped_references(
+                document,
+                symbol,
+                &word,
+                declaration.as_ref(),
+                include_declaration,
+            );
+        }
 
         let mut locations = Vec::new();
         for document in self.all_documents() {
@@ -2588,6 +2616,12 @@ impl Document {
             .filter(move |symbol| symbol.is_visible_at(position))
     }
 
+    fn visible_symbol_named_at(&self, name: &str, position: Position) -> Option<&Symbol> {
+        self.visible_symbols(position)
+            .filter(|symbol| symbol.name == name)
+            .min_by(|left, right| symbol_visibility_order(left, right))
+    }
+
     fn import_target_for_name(&self, name: &str) -> Option<ImportTarget<'_>> {
         self.imports.iter().find_map(|import| {
             import.imported_names.iter().find_map(|imported| {
@@ -2597,6 +2631,12 @@ impl Document {
                 })
             })
         })
+    }
+
+    fn symbol_by_selection_range(&self, range: Range) -> Option<&Symbol> {
+        self.symbols
+            .iter()
+            .find(|symbol| symbol.selection_range == range)
     }
 
     fn symbol_at(&self, position: Position) -> Option<&Symbol> {
@@ -3253,6 +3293,56 @@ fn type_key(item: &TypeHierarchyItem) -> TypeKey {
         item.selection_range.end.line,
         item.selection_range.end.character,
     )
+}
+
+fn symbol_visibility_order(left: &Symbol, right: &Symbol) -> std::cmp::Ordering {
+    let left_scoped = left.scope_range.is_some();
+    let right_scoped = right.scope_range.is_some();
+    match (left_scoped, right_scoped) {
+        (true, false) => return std::cmp::Ordering::Less,
+        (false, true) => return std::cmp::Ordering::Greater,
+        _ => {}
+    }
+
+    let left_size = left
+        .scope_range
+        .map(range_size)
+        .unwrap_or((u32::MAX, u32::MAX));
+    let right_size = right
+        .scope_range
+        .map(range_size)
+        .unwrap_or((u32::MAX, u32::MAX));
+    left_size
+        .cmp(&right_size)
+        .then_with(|| compare_positions(right.selection_range.start, left.selection_range.start))
+}
+
+fn scoped_references(
+    document: &Document,
+    symbol: &Symbol,
+    word: &str,
+    declaration: Option<&Location>,
+    include_declaration: bool,
+) -> Vec<Location> {
+    let Some(scope) = symbol.scope_range else {
+        return Vec::new();
+    };
+
+    document
+        .word_ranges(word)
+        .into_iter()
+        .filter(|range| ranges_overlap(*range, scope))
+        .filter(|range| {
+            include_declaration
+                || !declaration.is_some_and(|declaration| {
+                    declaration.uri == document.uri && declaration.range == *range
+                })
+        })
+        .map(|range| Location {
+            uri: document.uri.clone(),
+            range,
+        })
+        .collect()
 }
 
 fn range_size(range: Range) -> (u32, u32) {
@@ -4103,22 +4193,22 @@ mod tests {
         let mut analyzer = Analyzer::new(Vec::new());
         analyzer.upsert_document(
             "file:///one.zzs",
-            "function main() {\n\tlet total := 1;\n\tsay total;\n}\n",
+            "function helper() {\n\treturn 1;\n}\nfunction main() {\n\thelper();\n}\n",
         );
-        analyzer.upsert_document("file:///two.zzs", "say total;\n");
+        analyzer.upsert_document("file:///two.zzs", "helper();\n");
 
-        let references = analyzer.references("file:///one.zzs", Position::new(1, 7), true);
+        let references = analyzer.references("file:///one.zzs", Position::new(0, 11), true);
         assert_eq!(references.len(), 3);
         assert!(references
             .iter()
             .any(|location| location.uri == "file:///two.zzs"));
 
-        let references = analyzer.references("file:///one.zzs", Position::new(1, 7), false);
+        let references = analyzer.references("file:///one.zzs", Position::new(0, 11), false);
         assert_eq!(references.len(), 2);
     }
 
     #[test]
-    fn keeps_same_range_references_in_other_documents() {
+    fn keeps_local_references_within_their_scope() {
         let mut analyzer = Analyzer::new(Vec::new());
         analyzer.upsert_document(
             "file:///one.zzs",
@@ -4130,10 +4220,12 @@ mod tests {
         );
 
         let references = analyzer.references("file:///one.zzs", Position::new(1, 7), false);
-        assert!(references.iter().any(|location| {
-            location.uri == "file:///two.zzs"
-                && location.range == Range::new(Position::new(1, 5), Position::new(1, 10))
-        }));
+        assert_eq!(references.len(), 1);
+        assert_eq!(references[0].uri, "file:///one.zzs");
+        assert_eq!(
+            references[0].range,
+            Range::new(Position::new(2, 5), Position::new(2, 10))
+        );
     }
 
     #[test]
@@ -4159,6 +4251,32 @@ mod tests {
             analyzer.rename("file:///example.zzs", Position::new(1, 7), "2bad"),
             Err(RenameError::InvalidIdentifier(_))
         ));
+    }
+
+    #[test]
+    fn renames_only_the_selected_local_scope() {
+        let mut analyzer = Analyzer::new(Vec::new());
+        analyzer.upsert_document(
+            "file:///example.zzs",
+            concat!(
+                "function first() {\n",
+                "\tlet total := 1;\n",
+                "\tsay total;\n",
+                "}\n",
+                "function second() {\n",
+                "\tlet total := 2;\n",
+                "\tsay total;\n",
+                "}\n",
+            ),
+        );
+
+        let edits = analyzer
+            .rename("file:///example.zzs", Position::new(5, 7), "subtotal")
+            .unwrap();
+        assert_eq!(edits.len(), 2);
+        assert!(edits.iter().all(|edit| edit.uri == "file:///example.zzs"));
+        assert!(edits.iter().all(|edit| edit.edit.new_text == "subtotal"));
+        assert!(edits.iter().all(|edit| edit.edit.range.start.line >= 5));
     }
 
     #[test]
