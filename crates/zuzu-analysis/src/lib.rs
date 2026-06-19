@@ -128,6 +128,22 @@ pub struct TypeHierarchyItem {
 pub struct CompletionItem {
     pub label: String,
     pub detail: Option<String>,
+    pub kind: CompletionKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CompletionKind {
+    Keyword,
+    BuiltinStatement,
+    Module,
+    Function,
+    Method,
+    Class,
+    Trait,
+    Field,
+    Variable,
+    Parameter,
+    Import,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -568,6 +584,7 @@ impl Analyzer {
             items.push(CompletionItem {
                 label: (*keyword).to_string(),
                 detail: Some("ZuzuScript keyword".to_string()),
+                kind: CompletionKind::Keyword,
             });
         }
 
@@ -575,6 +592,7 @@ impl Analyzer {
             items.push(CompletionItem {
                 label: (*builtin).to_string(),
                 detail: Some("ZuzuScript builtin statement".to_string()),
+                kind: CompletionKind::BuiltinStatement,
             });
         }
 
@@ -583,6 +601,7 @@ impl Analyzer {
                 items.push(CompletionItem {
                     label: symbol.name.clone(),
                     detail: Some(format!("{:?}", symbol.kind).to_lowercase()),
+                    kind: completion_kind_for_symbol(&symbol.kind),
                 });
             }
         }
@@ -591,11 +610,17 @@ impl Analyzer {
             items.push(CompletionItem {
                 label: module.to_string(),
                 detail: Some("ZuzuScript module".to_string()),
+                kind: CompletionKind::Module,
             });
         }
 
-        items.sort_by(|a, b| a.label.cmp(&b.label).then(a.detail.cmp(&b.detail)));
-        items.dedup_by(|a, b| a.label == b.label && a.detail == b.detail);
+        items.sort_by(|a, b| {
+            a.label
+                .cmp(&b.label)
+                .then(a.detail.cmp(&b.detail))
+                .then(completion_kind_rank(a.kind).cmp(&completion_kind_rank(b.kind)))
+        });
+        items.dedup_by(|a, b| a.label == b.label && a.detail == b.detail && a.kind == b.kind);
         items
     }
 
@@ -3007,6 +3032,36 @@ fn is_type_kind(kind: &SymbolKind) -> bool {
     matches!(kind, SymbolKind::Class | SymbolKind::Trait)
 }
 
+fn completion_kind_for_symbol(kind: &SymbolKind) -> CompletionKind {
+    match kind {
+        SymbolKind::Module => CompletionKind::Module,
+        SymbolKind::Function => CompletionKind::Function,
+        SymbolKind::Method => CompletionKind::Method,
+        SymbolKind::Class => CompletionKind::Class,
+        SymbolKind::Trait => CompletionKind::Trait,
+        SymbolKind::Field => CompletionKind::Field,
+        SymbolKind::Variable => CompletionKind::Variable,
+        SymbolKind::Parameter => CompletionKind::Parameter,
+        SymbolKind::Import => CompletionKind::Import,
+    }
+}
+
+fn completion_kind_rank(kind: CompletionKind) -> u8 {
+    match kind {
+        CompletionKind::Keyword => 0,
+        CompletionKind::BuiltinStatement => 1,
+        CompletionKind::Module => 2,
+        CompletionKind::Function => 3,
+        CompletionKind::Method => 4,
+        CompletionKind::Class => 5,
+        CompletionKind::Trait => 6,
+        CompletionKind::Field => 7,
+        CompletionKind::Variable => 8,
+        CompletionKind::Parameter => 9,
+        CompletionKind::Import => 10,
+    }
+}
+
 fn call_hierarchy_item(symbol: &Symbol) -> CallHierarchyItem {
     CallHierarchyItem {
         name: symbol.name.clone(),
@@ -3481,12 +3536,48 @@ mod tests {
     fn completes_fn_keyword() {
         let mut analyzer = Analyzer::new(Vec::new());
         analyzer.upsert_document("file:///example.zzs", "let cb := f\n");
-        let labels: Vec<_> = analyzer
-            .completions("file:///example.zzs", Position::new(0, 11))
-            .into_iter()
-            .map(|item| item.label)
-            .collect();
-        assert!(labels.iter().any(|label| label == "fn"));
+        let completions = analyzer.completions("file:///example.zzs", Position::new(0, 11));
+        assert!(completions
+            .iter()
+            .any(|item| item.label == "fn" && item.kind == CompletionKind::Keyword));
+    }
+
+    #[test]
+    fn classifies_symbol_and_module_completions() {
+        let root = unique_temp_dir("zuzu-analysis-completion-kinds");
+        let module_dir = root.join("modules").join("demo");
+        fs::create_dir_all(&module_dir).unwrap();
+        fs::write(module_dir.join("tools.zzm"), "function exported() { }\n").unwrap();
+
+        let mut analyzer = Analyzer::new(vec![root.clone()]);
+        analyzer.upsert_document(
+            "file:///example.zzs",
+            concat!(
+                "function helper(first, second) {\n",
+                "\tlet total := first + second;\n",
+                "\ttotal\n",
+                "}\n",
+            ),
+        );
+
+        let completions = analyzer.completions("file:///example.zzs", Position::new(2, 3));
+        assert!(completions
+            .iter()
+            .any(|item| { item.label == "helper" && item.kind == CompletionKind::Function }));
+        assert!(completions
+            .iter()
+            .any(|item| { item.label == "first" && item.kind == CompletionKind::Parameter }));
+        assert!(completions
+            .iter()
+            .any(|item| { item.label == "total" && item.kind == CompletionKind::Variable }));
+        assert!(completions
+            .iter()
+            .any(|item| { item.label == "demo/tools" && item.kind == CompletionKind::Module }));
+
+        let _ = fs::remove_file(module_dir.join("tools.zzm"));
+        let _ = fs::remove_dir(module_dir);
+        let _ = fs::remove_dir(root.join("modules"));
+        let _ = fs::remove_dir(root);
     }
 
     #[test]

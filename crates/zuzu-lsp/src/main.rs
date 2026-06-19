@@ -24,21 +24,21 @@ use lsp_types::{
     CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
     CallHierarchyServerCapability, CancelParams, CodeAction, CodeActionKind, CodeActionOptions,
     CodeActionOrCommand, CodeActionProviderCapability, CodeLens, CodeLensOptions,
-    Command as LspCommand, CompletionOptions, CompletionResponse, CreateFile, CreateFileOptions,
-    Diagnostic as LspDiagnostic, DiagnosticOptions, DiagnosticServerCapabilities,
-    DiagnosticSeverity, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
-    DidChangeWorkspaceFoldersParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentChangeOperation, DocumentChanges, DocumentDiagnosticParams, DocumentDiagnosticReport,
-    DocumentDiagnosticReportResult, DocumentFormattingParams, DocumentHighlight,
-    DocumentHighlightKind, DocumentHighlightParams, DocumentLink, DocumentLinkOptions,
-    DocumentLinkParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-    ExecuteCommandOptions, FoldingRange, FoldingRangeKind, FoldingRangeParams,
-    FullDocumentDiagnosticReport, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    InitializeParams, InitializeResult, InlayHint, InlayHintKind, InlayHintLabel, InlayHintOptions,
-    InlayHintParams, InlayHintServerCapabilities, Location, LogMessageParams, MarkedString,
-    MarkupContent, MarkupKind, MessageType, NumberOrString, OneOf, ParameterInformation,
-    ParameterLabel, Position, PrepareRenameResponse, ProgressParams, ProgressParamsValue,
-    ProgressToken, PublishDiagnosticsParams, Range, ReferenceParams,
+    Command as LspCommand, CompletionItemKind, CompletionOptions, CompletionResponse, CreateFile,
+    CreateFileOptions, Diagnostic as LspDiagnostic, DiagnosticOptions,
+    DiagnosticServerCapabilities, DiagnosticSeverity, DidChangeTextDocumentParams,
+    DidChangeWatchedFilesParams, DidChangeWorkspaceFoldersParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DocumentChangeOperation, DocumentChanges, DocumentDiagnosticParams,
+    DocumentDiagnosticReport, DocumentDiagnosticReportResult, DocumentFormattingParams,
+    DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentLink,
+    DocumentLinkOptions, DocumentLinkParams, DocumentSymbol, DocumentSymbolParams,
+    DocumentSymbolResponse, ExecuteCommandOptions, FoldingRange, FoldingRangeKind,
+    FoldingRangeParams, FullDocumentDiagnosticReport, GotoDefinitionResponse, Hover, HoverContents,
+    HoverParams, InitializeParams, InitializeResult, InlayHint, InlayHintKind, InlayHintLabel,
+    InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, Location, LogMessageParams,
+    MarkedString, MarkupContent, MarkupKind, MessageType, NumberOrString, OneOf,
+    ParameterInformation, ParameterLabel, Position, PrepareRenameResponse, ProgressParams,
+    ProgressParamsValue, ProgressToken, PublishDiagnosticsParams, Range, ReferenceParams,
     RelatedFullDocumentDiagnosticReport, RenameOptions, RenameParams, ResourceOp,
     SelectionRange as LspSelectionRange, SelectionRangeParams, SemanticToken as LspSemanticToken,
     SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
@@ -944,6 +944,7 @@ impl Server {
             .map(|item| lsp_types::CompletionItem {
                 label: item.label,
                 detail: item.detail,
+                kind: Some(to_completion_item_kind(item.kind)),
                 ..Default::default()
             })
             .collect();
@@ -2100,6 +2101,22 @@ fn symbol_kind(kind: zuzu_analysis::SymbolKind) -> lsp_types::SymbolKind {
         zuzu_analysis::SymbolKind::Variable => lsp_types::SymbolKind::VARIABLE,
         zuzu_analysis::SymbolKind::Parameter => lsp_types::SymbolKind::VARIABLE,
         zuzu_analysis::SymbolKind::Import => lsp_types::SymbolKind::MODULE,
+    }
+}
+
+fn to_completion_item_kind(kind: zuzu_analysis::CompletionKind) -> CompletionItemKind {
+    match kind {
+        zuzu_analysis::CompletionKind::Keyword => CompletionItemKind::KEYWORD,
+        zuzu_analysis::CompletionKind::BuiltinStatement => CompletionItemKind::KEYWORD,
+        zuzu_analysis::CompletionKind::Module => CompletionItemKind::MODULE,
+        zuzu_analysis::CompletionKind::Function => CompletionItemKind::FUNCTION,
+        zuzu_analysis::CompletionKind::Method => CompletionItemKind::METHOD,
+        zuzu_analysis::CompletionKind::Class => CompletionItemKind::CLASS,
+        zuzu_analysis::CompletionKind::Trait => CompletionItemKind::INTERFACE,
+        zuzu_analysis::CompletionKind::Field => CompletionItemKind::FIELD,
+        zuzu_analysis::CompletionKind::Variable => CompletionItemKind::VARIABLE,
+        zuzu_analysis::CompletionKind::Parameter => CompletionItemKind::VARIABLE,
+        zuzu_analysis::CompletionKind::Import => CompletionItemKind::MODULE,
     }
 }
 

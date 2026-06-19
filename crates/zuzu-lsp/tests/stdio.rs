@@ -224,6 +224,17 @@ exit 0
     assert!(labels.contains(&"fn"));
     assert!(labels.contains(&"example/math"));
     assert!(labels.contains(&"configured/module"));
+    assert_completion_kind(&completion, "fn", lsp_types::CompletionItemKind::KEYWORD);
+    assert_completion_kind(
+        &completion,
+        "example/math",
+        lsp_types::CompletionItemKind::MODULE,
+    );
+    assert_completion_kind(
+        &completion,
+        "configured/module",
+        lsp_types::CompletionItemKind::MODULE,
+    );
 
     send(
         &mut stdin,
@@ -2257,6 +2268,16 @@ fn read_message(reader: &mut BufReader<ChildStdout>) -> Value {
     let mut body = vec![0; length];
     reader.read_exact(&mut body).unwrap();
     serde_json::from_slice(&body).unwrap()
+}
+
+fn assert_completion_kind(completion: &Value, label: &str, kind: lsp_types::CompletionItemKind) {
+    let item = completion["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["label"].as_str() == Some(label))
+        .unwrap_or_else(|| panic!("completion `{label}`"));
+    assert_eq!(item["kind"], json!(kind), "completion kind for `{label}`");
 }
 
 fn write_fake_command(path: &std::path::Path, body: &str) {
