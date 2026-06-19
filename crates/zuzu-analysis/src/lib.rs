@@ -1351,7 +1351,17 @@ fn distribution_metadata_from_text(text: &str) -> (BTreeSet<String>, Vec<Diagnos
             )],
         );
     };
-    let Some(dependencies) = value.get("dependencies") else {
+    let Some(metadata) = value.as_object() else {
+        return (
+            BTreeSet::new(),
+            vec![metadata_diagnostic(
+                "metadata-root-not-object",
+                "zuzu-distribution.json must contain a JSON object",
+                full_text_range(text),
+            )],
+        );
+    };
+    let Some(dependencies) = metadata.get("dependencies") else {
         return (BTreeSet::new(), Vec::new());
     };
     let Some(dependencies) = dependencies.as_object() else {
@@ -1364,6 +1374,26 @@ fn distribution_metadata_from_text(text: &str) -> (BTreeSet<String>, Vec<Diagnos
             )],
         );
     };
+    let mut diagnostics = Vec::new();
+    for (name, version) in dependencies {
+        if name.is_empty() {
+            diagnostics.push(metadata_diagnostic(
+                "metadata-invalid-dependency-name",
+                "zuzu-distribution.json dependency names must be non-empty strings",
+                full_text_range(text),
+            ));
+        }
+        if !version.as_str().is_some_and(|version| !version.is_empty()) {
+            diagnostics.push(metadata_diagnostic(
+                "metadata-invalid-dependency-version",
+                "zuzu-distribution.json dependency versions must be non-empty strings",
+                full_text_range(text),
+            ));
+        }
+    }
+    if !diagnostics.is_empty() {
+        return (BTreeSet::new(), diagnostics);
+    }
     (dependencies.keys().cloned().collect(), Vec::new())
 }
 
@@ -3742,6 +3772,27 @@ mod tests {
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "metadata-invalid-dependencies"));
+
+        fs::write(root.join("zuzu-distribution.json"), "[]\n").unwrap();
+        let analyzer = Analyzer::new(vec![root.clone()]);
+        let diagnostics = analyzer.diagnostics(&metadata_uri);
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "metadata-root-not-object"));
+
+        fs::write(
+			root.join("zuzu-distribution.json"),
+			"{\n\t\"name\": \"bad-metadata\",\n\t\"dependencies\": {\n\t\t\"\": \"0\",\n\t\t\"dep\": 1\n\t}\n}\n",
+		)
+		.unwrap();
+        let analyzer = Analyzer::new(vec![root.clone()]);
+        let diagnostics = analyzer.diagnostics(&metadata_uri);
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "metadata-invalid-dependency-name"));
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "metadata-invalid-dependency-version"));
 
         let _ = fs::remove_file(root.join("zuzu-distribution.json"));
         let _ = fs::remove_dir(root.join("scripts"));
