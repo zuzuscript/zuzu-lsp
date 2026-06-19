@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use zuzu_analysis::{Analyzer, Position};
+use zuzu_analysis::{Analyzer, ImportFixAction, Position, Range};
 
 #[test]
 fn resolves_fixture_modules_and_provides_symbols() {
@@ -11,7 +11,13 @@ fn resolves_fixture_modules_and_provides_symbols() {
         .join("workspaces")
         .join("basic");
     let source = std::fs::read_to_string(root.join("scripts/demo.zzs")).unwrap();
-    let mut analyzer = Analyzer::new(vec![root]);
+    let mut analyzer = Analyzer::new(vec![root.clone()]);
+    let indexed_symbols = analyzer.workspace_symbols("Calculator");
+    assert!(indexed_symbols
+        .iter()
+        .any(|symbol| symbol.name == "Calculator"
+            && symbol.uri.ends_with("/modules/example/math.zzm")));
+
     let diagnostics = analyzer.upsert_document("file:///demo.zzs", source);
     assert!(
         diagnostics
@@ -21,9 +27,57 @@ fn resolves_fixture_modules_and_provides_symbols() {
     );
 
     let symbols = analyzer.document_symbols("file:///demo.zzs");
-    assert!(symbols.iter().any(|symbol| symbol.name == "main"));
+    assert!(symbols.iter().any(|symbol| symbol.name == "__main__"));
 
     let completions = analyzer.completions("file:///demo.zzs", Position::new(3, 5));
     assert!(completions.iter().any(|item| item.label == "fn"));
     assert!(completions.iter().any(|item| item.label == "example/math"));
+
+    let links = analyzer.document_links("file:///demo.zzs");
+    assert_eq!(links.len(), 1);
+    assert!(links[0].target.ends_with("/modules/example/math.zzm"));
+
+    let definition = analyzer
+        .definition("file:///demo.zzs", Position::new(3, 15))
+        .expect("definition from indexed module");
+    assert!(definition.uri.ends_with("/modules/example/math.zzm"));
+
+    let help = analyzer
+        .signature_help("file:///demo.zzs", Position::new(3, 20))
+        .expect("signature help from indexed module");
+    assert_eq!(help.label, "add(a, b)");
+
+    let hints = analyzer.inlay_hints(
+        "file:///demo.zzs",
+        Range::new(Position::new(0, 0), Position::new(6, 0)),
+    );
+    assert!(hints.iter().any(|hint| hint.label == "a:"));
+
+    let graph = analyzer.dependency_graph();
+    assert!(graph
+        .nodes
+        .iter()
+        .any(|node| node.id == "example/math" && node.kind == "module"));
+    assert!(graph.edges.iter().any(|edge| {
+        edge.from == "file:///demo.zzs" && edge.to == "example/math" && edge.resolved
+    }));
+
+    let diagnostics = analyzer.upsert_document(
+        "file:///needs-import.zzs",
+        "function __main__() {\n\tlet calculator := Calculator;\n}\n".to_string(),
+    );
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "undefined-local")
+        .expect("undefined local diagnostic");
+    let fixes = analyzer.import_fixes("file:///needs-import.zzs", diagnostic.range);
+    let fix = fixes
+        .iter()
+        .find(|fix| fix.title == "Import `Calculator` from `example/math`")
+        .expect("missing import fix");
+    let ImportFixAction::Edit(edit) = &fix.action else {
+        panic!("expected text edit fix");
+    };
+    assert_eq!(edit.edit.range.start, Position::new(0, 0));
+    assert_eq!(edit.edit.new_text, "from example/math import Calculator;\n");
 }
