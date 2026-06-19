@@ -46,13 +46,31 @@ so incomplete edits produce useful errors instead of diagnostic floods.
 
 ## Usage
 
+Install from Git:
+
 ```sh
-cargo run -p zuzu-lsp -- --stdio
+cargo install --git https://github.com/zuzuscript/zuzu-lsp.git zuzu-lsp
+```
+
+Tagged releases also publish standalone archives for Linux, macOS, and Windows.
+Those archives contain the `zuzu-lsp` binary and this README.
+
+Run the installed server over stdio:
+
+```sh
+zuzu-lsp --stdio
 ```
 
 For a quick local health check:
 
 ```sh
+zuzu-lsp doctor
+```
+
+During local development, run the same commands through Cargo:
+
+```sh
+cargo run -p zuzu-lsp -- --stdio
 cargo run -p zuzu-lsp -- doctor
 ```
 
