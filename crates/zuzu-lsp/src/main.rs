@@ -1835,7 +1835,7 @@ fn encode_semantic_tokens(mut tokens: Vec<zuzu_analysis::SemanticToken>) -> Vec<
             delta_start,
             length: end.character - start.character,
             token_type,
-            token_modifiers_bitset: 1,
+            token_modifiers_bitset: u32::from(token.is_declaration),
         });
         last_line = start.line;
         last_start = start.character;

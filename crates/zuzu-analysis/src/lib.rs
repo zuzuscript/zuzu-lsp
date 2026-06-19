@@ -100,6 +100,7 @@ pub struct SelectionRange {
 pub struct SemanticToken {
     pub range: Range,
     pub kind: SymbolKind,
+    pub is_declaration: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -426,15 +427,35 @@ impl Analyzer {
         let Some(document) = self.document(uri) else {
             return Vec::new();
         };
-        document
+        let mut tokens: Vec<_> = document
             .symbols
             .iter()
             .filter(|symbol| symbol.selection_range.start.line == symbol.selection_range.end.line)
             .map(|symbol| SemanticToken {
                 range: symbol.selection_range,
                 kind: symbol.kind.clone(),
+                is_declaration: true,
             })
-            .collect()
+            .collect();
+
+        for range in document.value_identifier_ranges() {
+            let Some(location) = self.definition(uri, range.start) else {
+                continue;
+            };
+            if location.uri == uri && location.range == range {
+                continue;
+            }
+            let Some((_, symbol)) = self.symbol_for_location(&location) else {
+                continue;
+            };
+            tokens.push(SemanticToken {
+                range,
+                kind: symbol.kind.clone(),
+                is_declaration: false,
+            });
+        }
+
+        tokens
     }
 
     pub fn prepare_call_hierarchy(&self, uri: &str, position: Position) -> Vec<CallHierarchyItem> {
@@ -2610,6 +2631,30 @@ impl Document {
         }
     }
 
+    fn value_identifier_ranges(&self) -> Vec<Range> {
+        let tree = self.tree.clone();
+        let root = tree.root_node();
+        let mut ranges = Vec::new();
+        self.collect_value_identifier_ranges(root, &mut ranges);
+        ranges
+    }
+
+    fn collect_value_identifier_ranges(&self, node: Node, ranges: &mut Vec<Range>) {
+        if node.kind() == "identifier" && self.identifier_is_value_usage(node) {
+            ranges.push(self.node_range(node));
+        }
+
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                self.collect_value_identifier_ranges(cursor.node(), ranges);
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
     fn visible_symbols(&self, position: Position) -> impl Iterator<Item = &Symbol> {
         self.symbols
             .iter()
@@ -4079,23 +4124,34 @@ mod tests {
         let mut analyzer = Analyzer::new(Vec::new());
         analyzer.upsert_document(
             "file:///example.zzs",
-            "class Thing;\nfunction main(arg) {\n\tlet total := arg;\n}\n",
+            "class Thing;\nfunction main(arg) {\n\tlet total := arg;\n\tlet other := total;\n}\n",
         );
 
         let tokens = analyzer.semantic_tokens("file:///example.zzs");
         assert!(tokens.iter().any(|token| {
             token.kind == SymbolKind::Class
                 && token.range == Range::new(Position::new(0, 6), Position::new(0, 11))
+                && token.is_declaration
         }));
         assert!(tokens
             .iter()
-            .any(|token| token.kind == SymbolKind::Function));
+            .any(|token| token.kind == SymbolKind::Function && token.is_declaration));
         assert!(tokens
             .iter()
-            .any(|token| token.kind == SymbolKind::Parameter));
+            .any(|token| token.kind == SymbolKind::Parameter && token.is_declaration));
         assert!(tokens
             .iter()
-            .any(|token| token.kind == SymbolKind::Variable));
+            .any(|token| token.kind == SymbolKind::Variable && token.is_declaration));
+        assert!(tokens.iter().any(|token| {
+            token.kind == SymbolKind::Parameter
+                && token.range == Range::new(Position::new(2, 14), Position::new(2, 17))
+                && !token.is_declaration
+        }));
+        assert!(tokens.iter().any(|token| {
+            token.kind == SymbolKind::Variable
+                && token.range == Range::new(Position::new(3, 14), Position::new(3, 19))
+                && !token.is_declaration
+        }));
     }
 
     #[test]

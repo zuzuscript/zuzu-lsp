@@ -816,6 +816,8 @@ exit 0
     assert!(!token_data.is_empty());
     assert_eq!(token_data.len() % 5, 0);
     assert!(token_data.chunks(5).any(|token| token[3] == 3));
+    assert!(token_data.chunks(5).any(|token| token[4] == 1));
+    assert!(token_data.chunks(5).any(|token| token[4] == 0));
 
     send(
         &mut stdin,
