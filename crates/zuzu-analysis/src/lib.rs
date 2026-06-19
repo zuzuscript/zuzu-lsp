@@ -1714,6 +1714,7 @@ impl Document {
         self.collect_node(root, &mut cursor);
         self.coalesce_syntax_diagnostics();
         self.collect_top_level_duplicate_diagnostics();
+        self.collect_scoped_duplicate_diagnostics();
     }
 
     fn coalesce_syntax_diagnostics(&mut self) {
@@ -2126,6 +2127,35 @@ impl Document {
                 if !cursor.goto_next_sibling() {
                     break;
                 }
+            }
+        }
+    }
+
+    fn collect_scoped_duplicate_diagnostics(&mut self) {
+        let mut seen: BTreeMap<(String, String, u32, u32, u32, u32), Range> = BTreeMap::new();
+        for symbol in &self.symbols {
+            let Some(scope) = symbol.scope_range else {
+                continue;
+            };
+            let Some(detail) = scoped_duplicate_detail(&symbol.kind) else {
+                continue;
+            };
+            let key = (
+                detail.to_string(),
+                symbol.name.clone(),
+                scope.start.line,
+                scope.start.character,
+                scope.end.line,
+                scope.end.character,
+            );
+            if seen.insert(key, symbol.selection_range).is_some() {
+                self.diagnostics.push(Diagnostic {
+                    range: symbol.selection_range,
+                    severity: DiagnosticSeverity::Error,
+                    source: "zuzu-semantic",
+                    code: "duplicate-declaration",
+                    message: format!("Duplicate {detail} `{}` in this scope", symbol.name),
+                });
             }
         }
     }
@@ -3143,6 +3173,14 @@ fn is_type_kind(kind: &SymbolKind) -> bool {
     matches!(kind, SymbolKind::Class | SymbolKind::Trait)
 }
 
+fn scoped_duplicate_detail(kind: &SymbolKind) -> Option<&'static str> {
+    match kind {
+        SymbolKind::Variable => Some("variable"),
+        SymbolKind::Parameter => Some("parameter"),
+        _ => None,
+    }
+}
+
 fn completion_kind_for_symbol(kind: &SymbolKind) -> CompletionKind {
     match kind {
         SymbolKind::Module => CompletionKind::Module,
@@ -3599,17 +3637,25 @@ mod tests {
         let mut analyzer = Analyzer::new(Vec::new());
         let diagnostics = analyzer.upsert_document(
             "file:///example.zzs",
-            "function same() {}\nfunction same() {}\nfunction local() {\n\tlet x := 1;\n\tlet x := 2;\n}\n",
+            "function same() {}\nfunction same() {}\nfunction local(a, a) {\n\tlet x := 1;\n\tlet x := 2;\n}\nfunction other() {\n\tlet x := 3;\n}\n",
         );
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.source == "zuzu-semantic" && diagnostic.code == "duplicate-declaration"
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "duplicate-declaration"
+                && diagnostic.message == "Duplicate variable `x` in this scope"
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "duplicate-declaration"
+                && diagnostic.message == "Duplicate parameter `a` in this scope"
         }));
         assert_eq!(
             diagnostics
                 .iter()
                 .filter(|diagnostic| diagnostic.code == "duplicate-declaration")
                 .count(),
-            1
+            3
         );
     }
 
