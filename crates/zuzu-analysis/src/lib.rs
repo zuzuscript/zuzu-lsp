@@ -803,7 +803,7 @@ impl Analyzer {
         let document = self.document(uri)?;
         let word = document.word_at(position)?;
         let range = document.word_range(position)?;
-        is_identifier(&word).then_some(range)
+        (is_rename_identifier(&word) && self.definition(uri, position).is_some()).then_some(range)
     }
 
     pub fn rename(
@@ -812,7 +812,7 @@ impl Analyzer {
         position: Position,
         new_name: &str,
     ) -> Result<Vec<WorkspaceTextEdit>, RenameError> {
-        if !is_identifier(new_name) {
+        if !is_rename_identifier(new_name) {
             return Err(RenameError::InvalidIdentifier(new_name.to_string()));
         }
 
@@ -3388,6 +3388,10 @@ fn is_identifier(word: &str) -> bool {
     (first == b'_' || first.is_ascii_alphabetic()) && bytes.all(is_word_byte)
 }
 
+fn is_rename_identifier(word: &str) -> bool {
+    is_identifier(word) && !KEYWORDS.contains(&word) && !BUILTIN_STATEMENTS.contains(&word)
+}
+
 fn position_ge(left: Position, right: Position) -> bool {
     (left.line, left.character) >= (right.line, right.character)
 }
@@ -4251,6 +4255,20 @@ mod tests {
             analyzer.rename("file:///example.zzs", Position::new(1, 7), "2bad"),
             Err(RenameError::InvalidIdentifier(_))
         ));
+        assert!(matches!(
+            analyzer.rename("file:///example.zzs", Position::new(1, 7), "if"),
+            Err(RenameError::InvalidIdentifier(_))
+        ));
+        assert_eq!(
+            analyzer.prepare_rename("file:///example.zzs", Position::new(2, 2)),
+            None
+        );
+
+        analyzer.upsert_document("file:///loose.zzs", "say missing;\n");
+        assert_eq!(
+            analyzer.prepare_rename("file:///loose.zzs", Position::new(0, 5)),
+            None
+        );
     }
 
     #[test]
