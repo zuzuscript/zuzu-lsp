@@ -1333,6 +1333,14 @@ fn distribution_metadata(root: &Path) -> (BTreeSet<String>, Vec<Diagnostic>) {
             )],
         );
     };
+    distribution_metadata_from_text(&text)
+}
+
+pub fn distribution_metadata_diagnostics(text: &str) -> Vec<Diagnostic> {
+    distribution_metadata_from_text(text).1
+}
+
+fn distribution_metadata_from_text(text: &str) -> (BTreeSet<String>, Vec<Diagnostic>) {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
         return (
             BTreeSet::new(),

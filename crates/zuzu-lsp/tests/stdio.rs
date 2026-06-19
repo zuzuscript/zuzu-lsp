@@ -1709,7 +1709,8 @@ fn publishes_distribution_metadata_diagnostics() {
         std::env::temp_dir().join(format!("zuzu-lsp-bad-metadata-root-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let metadata_path = root.join("zuzu-distribution.json");
-    std::fs::write(&metadata_path, "{ not json\n").unwrap();
+    let valid_metadata = "{\n\t\"name\": \"live-metadata\",\n\t\"dependencies\": {}\n}\n";
+    std::fs::write(&metadata_path, valid_metadata).unwrap();
     let metadata_uri = Url::from_file_path(&metadata_path).unwrap().to_string();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_zuzu-lsp"))
@@ -1772,6 +1773,28 @@ fn publishes_distribution_metadata_diagnostics() {
         diagnostics["params"]["diagnostics"][0]["source"],
         "zuzu-package"
     );
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {
+                    "uri": metadata_uri,
+                    "version": 2
+                },
+                "contentChanges": [
+                    {
+                        "text": valid_metadata
+                    }
+                ]
+            }
+        }),
+    );
+    let diagnostics = read_method(&mut reader, "textDocument/publishDiagnostics");
+    assert_eq!(diagnostics["params"]["uri"], metadata_uri);
+    assert_eq!(diagnostics["params"]["diagnostics"], json!([]));
 
     let _ = std::fs::remove_file(metadata_path);
     let _ = std::fs::remove_dir(root);

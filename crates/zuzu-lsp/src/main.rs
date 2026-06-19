@@ -57,8 +57,9 @@ use ropey::Rope;
 use serde_json::json;
 use tree_sitter::{InputEdit, Parser as TreeParser, Point, Tree};
 use zuzu_analysis::{
-    Analyzer, Diagnostic, DiagnosticSeverity as AnalysisSeverity, ImportFix, ImportFixAction,
-    ModuleTarget, PackageDiagnostic, RenameError,
+    distribution_metadata_diagnostics, Analyzer, Diagnostic,
+    DiagnosticSeverity as AnalysisSeverity, ImportFix, ImportFixAction, ModuleTarget,
+    PackageDiagnostic, RenameError,
 };
 use zuzu_toolchain::{ParserDiagnostic, ParserDiagnosticSeverity, ToolOutput, Toolchain};
 
@@ -586,7 +587,7 @@ impl Server {
                     let diagnostics = self.with_toolchain_diagnostics(&uri, &text, diagnostics);
                     self.publish_diagnostics(uri, version, diagnostics)
                 } else if is_distribution_metadata {
-                    self.publish_diagnostics(uri.clone(), version, self.analyzer.diagnostics(&uri))
+                    self.publish_diagnostics(uri, version, distribution_metadata_diagnostics(&text))
                 } else {
                     self.publish_diagnostics(uri, version, Vec::new())
                 }
@@ -609,9 +610,9 @@ impl Server {
                     self.publish_diagnostics(uri, version, diagnostics)?;
                 } else if document.is_distribution_metadata() {
                     self.publish_diagnostics(
-                        uri.clone(),
+                        uri,
                         version,
-                        self.analyzer.diagnostics(&uri),
+                        distribution_metadata_diagnostics(&text),
                     )?;
                 } else {
                     self.analyzer.remove_document(&uri);
