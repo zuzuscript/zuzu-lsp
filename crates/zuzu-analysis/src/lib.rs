@@ -292,6 +292,7 @@ pub struct Workspace {
     roots: Vec<PathBuf>,
     module_roots: Vec<PathBuf>,
     distributions: Vec<Distribution>,
+    metadata_diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     known_modules: BTreeSet<String>,
 }
 
@@ -352,7 +353,7 @@ impl Analyzer {
     pub fn diagnostics(&self, uri: &str) -> Vec<Diagnostic> {
         self.document(uri)
             .map(|document| document.diagnostics.clone())
-            .unwrap_or_default()
+            .unwrap_or_else(|| self.workspace.metadata_diagnostics(uri))
     }
 
     pub fn document_symbols(&self, uri: &str) -> Vec<Symbol> {
@@ -942,15 +943,18 @@ impl Analyzer {
                 document
                     .diagnostics
                     .iter()
-                    .map(|diagnostic| PackageDiagnostic {
-                        uri: document.uri.clone(),
-                        range: diagnostic.range,
-                        severity: diagnostic.severity.clone(),
-                        source: diagnostic.source.to_string(),
-                        code: diagnostic.code.to_string(),
-                        message: diagnostic.message.clone(),
-                    })
+                    .map(|diagnostic| package_diagnostic(&document.uri, diagnostic))
             })
+            .chain(
+                self.workspace
+                    .metadata_diagnostics
+                    .iter()
+                    .flat_map(|(uri, diagnostics)| {
+                        diagnostics
+                            .iter()
+                            .map(|diagnostic| package_diagnostic(uri, diagnostic))
+                    }),
+            )
             .collect();
 
         PackageReport {
@@ -1073,13 +1077,14 @@ impl Workspace {
         module_roots.retain(|path| path.is_dir());
         dedup_paths(&mut module_roots);
 
-        let distributions = collect_distributions(&roots);
+        let (distributions, metadata_diagnostics) = collect_distributions(&roots);
         let known_modules = scan_modules(&module_roots);
 
         Self {
             roots,
             module_roots,
             distributions,
+            metadata_diagnostics,
             known_modules,
         }
     }
@@ -1094,6 +1099,13 @@ impl Workspace {
 
     pub fn known_modules(&self) -> impl Iterator<Item = &str> {
         self.known_modules.iter().map(String::as_str)
+    }
+
+    fn metadata_diagnostics(&self, uri: &str) -> Vec<Diagnostic> {
+        self.metadata_diagnostics
+            .get(uri)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn resolve_module(&self, module: &str) -> bool {
@@ -1286,35 +1298,86 @@ fn index_workspace_documents(workspace: &Workspace) -> BTreeMap<String, Document
     documents
 }
 
-fn collect_distributions(roots: &[PathBuf]) -> Vec<Distribution> {
+fn collect_distributions(
+    roots: &[PathBuf],
+) -> (Vec<Distribution>, BTreeMap<String, Vec<Diagnostic>>) {
     let mut distribution_roots: Vec<PathBuf> = roots
         .iter()
         .filter_map(|root| find_distribution_root(root))
         .collect();
     distribution_roots.sort();
     distribution_roots.dedup();
-    distribution_roots
-        .into_iter()
-        .map(|root| Distribution {
-            dependencies: distribution_dependencies(&root),
-            root,
-        })
-        .collect()
+    let mut distributions = Vec::new();
+    let mut diagnostics = BTreeMap::new();
+    for root in distribution_roots {
+        let (dependencies, metadata_diagnostics) = distribution_metadata(&root);
+        if !metadata_diagnostics.is_empty() {
+            if let Some(uri) = path_to_uri(&root.join("zuzu-distribution.json")) {
+                diagnostics.insert(uri, metadata_diagnostics);
+            }
+        }
+        distributions.push(Distribution { root, dependencies });
+    }
+    (distributions, diagnostics)
 }
 
-fn distribution_dependencies(root: &Path) -> BTreeSet<String> {
+fn distribution_metadata(root: &Path) -> (BTreeSet<String>, Vec<Diagnostic>) {
     let metadata_path = root.join("zuzu-distribution.json");
-    let Ok(text) = fs::read_to_string(metadata_path) else {
-        return BTreeSet::new();
+    let Ok(text) = fs::read_to_string(&metadata_path) else {
+        return (
+            BTreeSet::new(),
+            vec![metadata_diagnostic(
+                "metadata-unreadable",
+                "Could not read zuzu-distribution.json",
+                Range::new(Position::new(0, 0), Position::new(0, 0)),
+            )],
+        );
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return BTreeSet::new();
+        return (
+            BTreeSet::new(),
+            vec![metadata_diagnostic(
+                "metadata-invalid-json",
+                "zuzu-distribution.json is not valid JSON",
+                full_text_range(&text),
+            )],
+        );
     };
-    value
-        .get("dependencies")
-        .and_then(|dependencies| dependencies.as_object())
-        .map(|dependencies| dependencies.keys().cloned().collect())
-        .unwrap_or_default()
+    let Some(dependencies) = value.get("dependencies") else {
+        return (BTreeSet::new(), Vec::new());
+    };
+    let Some(dependencies) = dependencies.as_object() else {
+        return (
+            BTreeSet::new(),
+            vec![metadata_diagnostic(
+                "metadata-invalid-dependencies",
+                "zuzu-distribution.json dependencies must be an object",
+                full_text_range(&text),
+            )],
+        );
+    };
+    (dependencies.keys().cloned().collect(), Vec::new())
+}
+
+fn metadata_diagnostic(code: &'static str, message: impl Into<String>, range: Range) -> Diagnostic {
+    Diagnostic {
+        range,
+        severity: DiagnosticSeverity::Error,
+        source: "zuzu-package",
+        code,
+        message: message.into(),
+    }
+}
+
+fn package_diagnostic(uri: &str, diagnostic: &Diagnostic) -> PackageDiagnostic {
+    PackageDiagnostic {
+        uri: uri.to_string(),
+        range: diagnostic.range,
+        severity: diagnostic.severity.clone(),
+        source: diagnostic.source.to_string(),
+        code: diagnostic.code.to_string(),
+        message: diagnostic.message.clone(),
+    }
 }
 
 fn dependency_covers_module(dependency: &str, module: &str) -> bool {
@@ -3640,6 +3703,40 @@ mod tests {
         let _ = fs::remove_dir(root.join("scripts"));
         let _ = fs::remove_dir(root.join("modules").join("local"));
         let _ = fs::remove_dir(root.join("modules"));
+        let _ = fs::remove_dir(root);
+    }
+
+    #[test]
+    fn diagnoses_malformed_distribution_metadata() {
+        let root = unique_temp_dir("zuzu-analysis-bad-metadata");
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::write(root.join("zuzu-distribution.json"), "{ not json\n").unwrap();
+        let metadata_uri = path_to_uri(&root.join("zuzu-distribution.json")).unwrap();
+
+        let analyzer = Analyzer::new(vec![root.clone()]);
+        let diagnostics = analyzer.diagnostics(&metadata_uri);
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.source == "zuzu-package" && diagnostic.code == "metadata-invalid-json"
+        }));
+
+        let report = analyzer.package_report(Some(&root.join("zuzu-distribution.json")));
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.uri == metadata_uri && diagnostic.code == "metadata-invalid-json"
+        }));
+
+        fs::write(
+            root.join("zuzu-distribution.json"),
+            "{\n\t\"name\": \"bad-metadata\",\n\t\"dependencies\": []\n}\n",
+        )
+        .unwrap();
+        let analyzer = Analyzer::new(vec![root.clone()]);
+        let diagnostics = analyzer.diagnostics(&metadata_uri);
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "metadata-invalid-dependencies"));
+
+        let _ = fs::remove_file(root.join("zuzu-distribution.json"));
+        let _ = fs::remove_dir(root.join("scripts"));
         let _ = fs::remove_dir(root);
     }
 

@@ -423,6 +423,10 @@ impl DocumentSnapshot {
         )
     }
 
+    fn is_distribution_metadata(&self) -> bool {
+        self.kind == DocumentKind::DistributionMetadata
+    }
+
     fn apply_change(&mut self, change: TextDocumentContentChangeEvent) -> Result<()> {
         if let Some(range) = change.range {
             let start = char_offset_for_position(&self.text, range.start)
@@ -575,11 +579,14 @@ impl Server {
                 );
                 let text = document.text();
                 let should_analyze = document.is_zuzu_document();
+                let is_distribution_metadata = document.is_distribution_metadata();
                 self.text_documents.insert(uri.clone(), document);
                 if should_analyze {
                     let diagnostics = self.analyzer.upsert_document(&uri, text.as_str());
                     let diagnostics = self.with_toolchain_diagnostics(&uri, &text, diagnostics);
                     self.publish_diagnostics(uri, version, diagnostics)
+                } else if is_distribution_metadata {
+                    self.publish_diagnostics(uri.clone(), version, self.analyzer.diagnostics(&uri))
                 } else {
                     self.publish_diagnostics(uri, version, Vec::new())
                 }
@@ -600,6 +607,12 @@ impl Server {
                     let diagnostics = self.analyzer.upsert_document(&uri, text.as_str());
                     let diagnostics = self.with_toolchain_diagnostics(&uri, &text, diagnostics);
                     self.publish_diagnostics(uri, version, diagnostics)?;
+                } else if document.is_distribution_metadata() {
+                    self.publish_diagnostics(
+                        uri.clone(),
+                        version,
+                        self.analyzer.diagnostics(&uri),
+                    )?;
                 } else {
                     self.analyzer.remove_document(&uri);
                     self.publish_diagnostics(uri, version, Vec::new())?;

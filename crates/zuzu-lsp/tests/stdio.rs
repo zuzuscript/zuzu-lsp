@@ -1703,6 +1703,82 @@ exit 0
     shutdown(&mut child, stdin, &mut reader);
 }
 
+#[test]
+fn publishes_distribution_metadata_diagnostics() {
+    let root =
+        std::env::temp_dir().join(format!("zuzu-lsp-bad-metadata-root-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let metadata_path = root.join("zuzu-distribution.json");
+    std::fs::write(&metadata_path, "{ not json\n").unwrap();
+    let metadata_uri = Url::from_file_path(&metadata_path).unwrap().to_string();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zuzu-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn zuzu-lsp");
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "processId": null,
+                "rootUri": Url::from_file_path(&root).unwrap().to_string(),
+                "capabilities": {}
+            }
+        }),
+    );
+    let initialize = read_response(&mut reader, 1);
+    assert_eq!(initialize["result"]["serverInfo"]["name"], "zuzu-lsp");
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": metadata_uri,
+                    "languageId": "json",
+                    "version": 1,
+                    "text": "{ not json\n"
+                }
+            }
+        }),
+    );
+    let diagnostics = read_method(&mut reader, "textDocument/publishDiagnostics");
+    assert_eq!(diagnostics["params"]["uri"], metadata_uri);
+    assert_eq!(
+        diagnostics["params"]["diagnostics"][0]["code"],
+        "metadata-invalid-json"
+    );
+    assert_eq!(
+        diagnostics["params"]["diagnostics"][0]["source"],
+        "zuzu-package"
+    );
+
+    let _ = std::fs::remove_file(metadata_path);
+    let _ = std::fs::remove_dir(root);
+
+    shutdown(&mut child, stdin, &mut reader);
+}
+
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
