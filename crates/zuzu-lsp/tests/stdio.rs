@@ -796,7 +796,12 @@ exit 0
     let metadata_uri = Url::from_file_path(root.join("zuzu-distribution.json"))
         .unwrap()
         .to_string();
-    let metadata_source = std::fs::read_to_string(root.join("zuzu-distribution.json")).unwrap();
+    let metadata_source = std::fs::read_to_string(root.join("zuzu-distribution.json"))
+        .unwrap()
+        .replace(
+            "\"version\": \"0.0.1\",",
+            "\"version\": \"0.0.1\",\n\t\"repo\": \"https://github.com/zuzuscript/zuzu-lsp-fixture\",",
+        );
     send(
         &mut stdin,
         json!({
@@ -875,6 +880,16 @@ exit 0
         .as_str()
         .unwrap()
         .ends_with("/modules/example/math.zzm"));
+    let repo_link = metadata_links["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|link| link["tooltip"] == "Open package metadata `repo` URL")
+        .expect("metadata repo document link");
+    assert_eq!(
+        repo_link["target"],
+        "https://github.com/zuzuscript/zuzu-lsp-fixture"
+    );
 
     send(
         &mut stdin,

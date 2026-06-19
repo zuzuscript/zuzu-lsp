@@ -1551,7 +1551,7 @@ impl Server {
         let Some(text) = self.text_for_uri(uri) else {
             return Vec::new();
         };
-        metadata_dependency_links(&text)
+        let mut links: Vec<DocumentLink> = metadata_dependency_links(&text)
             .into_iter()
             .filter_map(|dependency| {
                 Some(DocumentLink {
@@ -1566,7 +1566,16 @@ impl Server {
                     data: None,
                 })
             })
-            .collect()
+            .collect();
+        links.extend(metadata_url_links(&text).into_iter().filter_map(|link| {
+            Some(DocumentLink {
+                range: link.range,
+                target: Some(parse_uri(&link.target)?),
+                tooltip: Some(format!("Open package metadata `{}` URL", link.field)),
+                data: None,
+            })
+        }));
+        links
     }
 
     fn zuzu_document_links(&self, uri: &str) -> Vec<DocumentLink> {
@@ -2141,6 +2150,13 @@ struct MetadataDependencyLink {
 }
 
 #[derive(Debug, Clone)]
+struct MetadataUrlLink {
+    field: &'static str,
+    target: String,
+    range: Range,
+}
+
+#[derive(Debug, Clone)]
 struct PodLink {
     target: String,
     range: Range,
@@ -2176,6 +2192,44 @@ fn metadata_dependency_links(text: &str) -> Vec<MetadataDependencyLink> {
             })
         })
         .collect()
+}
+
+fn metadata_url_links(text: &str) -> Vec<MetadataUrlLink> {
+    const URL_FIELDS: &[&str] = &["repo", "homepage", "documentation"];
+
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    let Some(metadata) = value.as_object() else {
+        return Vec::new();
+    };
+
+    URL_FIELDS
+        .iter()
+        .filter_map(|field| {
+            let target = metadata.get(*field)?.as_str()?;
+            if !is_external_url(target) {
+                return None;
+            }
+            let field_start = find_json_string(text, 0, field)?;
+            let value_start = find_json_string(
+                text,
+                field_start + serde_json::to_string(field).ok()?.len(),
+                target,
+            )?;
+            let content_start = value_start + 1;
+            let content_end = value_start + serde_json::to_string(target).ok()?.len() - 1;
+            Some(MetadataUrlLink {
+                field,
+                target: target.to_string(),
+                range: range_for_byte_span(text, content_start, content_end),
+            })
+        })
+        .collect()
+}
+
+fn is_external_url(target: &str) -> bool {
+    target.starts_with("https://") || target.starts_with("http://")
 }
 
 fn find_json_string(text: &str, start: usize, value: &str) -> Option<usize> {
