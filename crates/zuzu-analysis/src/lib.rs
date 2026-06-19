@@ -68,7 +68,17 @@ pub struct Symbol {
     pub range: Range,
     pub selection_range: Range,
     pub detail: Option<String>,
+    pub scope_range: Option<Range>,
     pub uri: String,
+}
+
+impl Symbol {
+    fn is_visible_at(&self, position: Position) -> bool {
+        let Some(scope) = self.scope_range else {
+            return true;
+        };
+        position_in_range(position, scope) && position_ge(position, self.selection_range.start)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1817,6 +1827,7 @@ impl Document {
                     range: self.node_range(node),
                     selection_range: range,
                     detail: Some("import".to_string()),
+                    scope_range: None,
                     uri: self.uri.clone(),
                 });
                 for imported in imported_names {
@@ -1826,6 +1837,7 @@ impl Document {
                         range: self.node_range(node),
                         selection_range: imported.range,
                         detail: Some(format!("import from {name}")),
+                        scope_range: None,
                         uri: self.uri.clone(),
                     });
                 }
@@ -1885,16 +1897,47 @@ impl Document {
     fn collect_named_symbol(&mut self, node: Node, kind: SymbolKind, detail: &str) {
         if let Some(name) = node.child_by_field_name("name") {
             if let Ok(text) = name.utf8_text(self.text.as_bytes()) {
+                let scope_range = self.symbol_scope_range(node, &kind);
                 self.symbols.push(Symbol {
                     name: text.to_string(),
                     kind,
                     range: self.node_range(node),
                     selection_range: self.node_range(name),
                     detail: Some(detail.to_string()),
+                    scope_range,
                     uri: self.uri.clone(),
                 });
             }
         }
+    }
+
+    fn symbol_scope_range(&self, node: Node, kind: &SymbolKind) -> Option<Range> {
+        match kind {
+            SymbolKind::Parameter => {
+                self.enclosing_range(node, &["function_declaration", "method_declaration"])
+            }
+            SymbolKind::Variable => self.enclosing_range(
+                node,
+                &[
+                    "block",
+                    "function_declaration",
+                    "method_declaration",
+                    "lambda_expression",
+                ],
+            ),
+            _ => None,
+        }
+    }
+
+    fn enclosing_range(&self, node: Node, kinds: &[&str]) -> Option<Range> {
+        let mut current = node.parent();
+        while let Some(parent) = current {
+            if kinds.contains(&parent.kind()) {
+                return Some(self.node_range(parent));
+            }
+            current = parent.parent();
+        }
+        None
     }
 
     fn collect_type_relations(&mut self, node: Node) {
@@ -2493,8 +2536,10 @@ impl Document {
         }
     }
 
-    fn visible_symbols(&self, _position: Position) -> impl Iterator<Item = &Symbol> {
-        self.symbols.iter()
+    fn visible_symbols(&self, position: Position) -> impl Iterator<Item = &Symbol> {
+        self.symbols
+            .iter()
+            .filter(move |symbol| symbol.is_visible_at(position))
     }
 
     fn import_target_for_name(&self, name: &str) -> Option<ImportTarget<'_>> {
@@ -3604,14 +3649,18 @@ mod tests {
             "file:///example.zzs",
             concat!(
                 "from demo/tools import exported as local_export;\n",
+                "function other(hidden_param) {\n",
+                "\tlet hidden_local := 1;\n",
+                "}\n",
                 "function helper(first, second) {\n",
                 "\tlet total := first + second;\n",
                 "\tlocal_export;\n",
+                "\tlet later := 1;\n",
                 "}\n",
             ),
         );
 
-        let completions = analyzer.completions("file:///example.zzs", Position::new(3, 3));
+        let completions = analyzer.completions("file:///example.zzs", Position::new(6, 3));
         assert!(completions
             .iter()
             .any(|item| { item.label == "helper" && item.kind == CompletionKind::Function }));
@@ -3627,9 +3676,12 @@ mod tests {
         assert!(completions
             .iter()
             .any(|item| { item.label == "demo/tools" && item.kind == CompletionKind::Module }));
+        assert!(!completions.iter().any(|item| item.label == "hidden_param"));
+        assert!(!completions.iter().any(|item| item.label == "hidden_local"));
+        assert!(!completions.iter().any(|item| item.label == "later"));
 
         let definition = analyzer
-            .definition("file:///example.zzs", Position::new(3, 3))
+            .definition("file:///example.zzs", Position::new(6, 3))
             .expect("definition for import alias");
         assert!(definition.uri.ends_with("/modules/demo/tools.zzm"));
 
