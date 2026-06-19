@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x86_64
+            os: ubuntu-latest
+            binary: zuzu-lsp
+            archive: zuzu-lsp-${{ github.ref_name }}-linux-x86_64.tar.gz
+            shell: bash
+          - label: macos-x86_64
+            os: macos-13
+            binary: zuzu-lsp
+            archive: zuzu-lsp-${{ github.ref_name }}-macos-x86_64.tar.gz
+            shell: bash
+          - label: macos-aarch64
+            os: macos-14
+            binary: zuzu-lsp
+            archive: zuzu-lsp-${{ github.ref_name }}-macos-aarch64.tar.gz
+            shell: bash
+          - label: windows-x86_64
+            os: windows-latest
+            binary: zuzu-lsp.exe
+            archive: zuzu-lsp-${{ github.ref_name }}-windows-x86_64.zip
+            shell: pwsh
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release -p zuzu-lsp --locked
+
+      - name: Package Unix archive
+        if: matrix.shell == 'bash'
+        shell: bash
+        run: |
+          mkdir -p dist/zuzu-lsp
+          cp "target/release/${{ matrix.binary }}" dist/zuzu-lsp/
+          cp README.md dist/zuzu-lsp/
+          tar -C dist -czf "${{ matrix.archive }}" zuzu-lsp
+
+      - name: Package Windows archive
+        if: matrix.shell == 'pwsh'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/zuzu-lsp | Out-Null
+          Copy-Item "target/release/${{ matrix.binary }}" dist/zuzu-lsp/
+          Copy-Item README.md dist/zuzu-lsp/
+          Compress-Archive -Path dist/zuzu-lsp -DestinationPath "${{ matrix.archive }}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.archive }}
