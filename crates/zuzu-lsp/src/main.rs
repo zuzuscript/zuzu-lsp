@@ -48,10 +48,11 @@ use lsp_types::{
     TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
     TextDocumentSyncOptions, TextEdit, TypeHierarchyItem, TypeHierarchyPrepareParams,
     TypeHierarchySubtypesParams, TypeHierarchySupertypesParams, Uri, WorkDoneProgress,
-    WorkDoneProgressBegin, WorkDoneProgressEnd, WorkDoneProgressOptions, WorkspaceDiagnosticParams,
-    WorkspaceDiagnosticReport, WorkspaceDiagnosticReportResult, WorkspaceDocumentDiagnosticReport,
-    WorkspaceEdit, WorkspaceFoldersServerCapabilities, WorkspaceFullDocumentDiagnosticReport,
-    WorkspaceServerCapabilities, WorkspaceSymbol, WorkspaceSymbolParams,
+    WorkDoneProgressBegin, WorkDoneProgressEnd, WorkDoneProgressOptions, WorkDoneProgressReport,
+    WorkspaceDiagnosticParams, WorkspaceDiagnosticReport, WorkspaceDiagnosticReportResult,
+    WorkspaceDocumentDiagnosticReport, WorkspaceEdit, WorkspaceFoldersServerCapabilities,
+    WorkspaceFullDocumentDiagnosticReport, WorkspaceServerCapabilities, WorkspaceSymbol,
+    WorkspaceSymbolParams,
 };
 use ropey::Rope;
 use serde_json::json;
@@ -1122,7 +1123,7 @@ impl Server {
                     title: "ZuzuScript workspace diagnostics".to_string(),
                     cancellable: Some(true),
                     message: Some("Collecting workspace diagnostics".to_string()),
-                    percentage: None,
+                    percentage: Some(0),
                 }),
             )?;
         }
@@ -1132,7 +1133,13 @@ impl Server {
         }
 
         let mut grouped: BTreeMap<String, Vec<LspDiagnostic>> = BTreeMap::new();
-        for diagnostic in self.analyzer.package_report(None).diagnostics {
+        let package_report = self.analyzer.package_report(None);
+        self.report_workspace_diagnostic_progress(
+            &progress_token,
+            Some("Collected package diagnostics".to_string()),
+            50,
+        )?;
+        for diagnostic in package_report.diagnostics {
             self.drain_cancellation_notifications()?;
             if self.consume_cancelled_request(&id) {
                 return self.cancel_workspace_diagnostic(id, progress_token);
@@ -1157,6 +1164,11 @@ impl Server {
                 ))
             })
             .collect();
+        self.report_workspace_diagnostic_progress(
+            &progress_token,
+            Some("Prepared workspace diagnostic report".to_string()),
+            100,
+        )?;
         self.drain_cancellation_notifications()?;
         if self.consume_cancelled_request(&id) {
             return self.cancel_workspace_diagnostic(id, progress_token);
@@ -1173,6 +1185,25 @@ impl Server {
             id,
             WorkspaceDiagnosticReportResult::Report(WorkspaceDiagnosticReport { items }),
         ))
+    }
+
+    fn report_workspace_diagnostic_progress(
+        &self,
+        progress_token: &Option<ProgressToken>,
+        message: Option<String>,
+        percentage: u32,
+    ) -> Result<()> {
+        let Some(token) = progress_token else {
+            return Ok(());
+        };
+        self.send_work_done_progress(
+            token.clone(),
+            WorkDoneProgress::Report(WorkDoneProgressReport {
+                cancellable: Some(true),
+                message,
+                percentage: Some(percentage),
+            }),
+        )
     }
 
     fn cancel_workspace_diagnostic(

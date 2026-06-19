@@ -1297,6 +1297,15 @@ exit 0
         progress_begin["params"]["value"]["title"],
         "ZuzuScript workspace diagnostics"
     );
+    assert_eq!(progress_begin["params"]["value"]["percentage"], 0);
+    let progress_report = read_method(&mut reader, "$/progress");
+    assert_eq!(progress_report["params"]["token"], "workspace-diagnostics");
+    assert_eq!(progress_report["params"]["value"]["kind"], "report");
+    assert_eq!(progress_report["params"]["value"]["percentage"], 50);
+    let progress_ready = read_method(&mut reader, "$/progress");
+    assert_eq!(progress_ready["params"]["token"], "workspace-diagnostics");
+    assert_eq!(progress_ready["params"]["value"]["kind"], "report");
+    assert_eq!(progress_ready["params"]["value"]["percentage"], 100);
     let progress_end = read_method(&mut reader, "$/progress");
     assert_eq!(progress_end["params"]["token"], "workspace-diagnostics");
     assert_eq!(progress_end["params"]["value"]["kind"], "end");
@@ -2048,6 +2057,7 @@ fn cancels_workspace_diagnostics() {
     );
     assert_eq!(progress_begin["params"]["value"]["kind"], "begin");
     assert_eq!(progress_begin["params"]["value"]["cancellable"], true);
+    assert_eq!(progress_begin["params"]["value"]["percentage"], 0);
 
     let progress_end = read_method(&mut reader, "$/progress");
     assert_eq!(
