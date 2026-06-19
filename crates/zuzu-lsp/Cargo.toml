@@ -10,7 +10,10 @@ anyhow.workspace = true
 clap.workspace = true
 lsp-server.workspace = true
 lsp-types.workspace = true
+ropey.workspace = true
 serde_json.workspace = true
+tree-sitter.workspace = true
+tree-sitter-zuzu.workspace = true
 url.workspace = true
 zuzu-analysis = { path = "../zuzu-analysis" }
 zuzu-toolchain = { path = "../zuzu-toolchain" }

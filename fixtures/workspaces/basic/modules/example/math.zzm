@@ -1,3 +1,14 @@
+=head1 NAME
+
+example/math - Fixture arithmetic helpers.
+
+=head1 DESCRIPTION
+
+This fixture module documents C<add> and C<Calculator> for language-server
+hover tests. See L<example/math> for a resolvable POD module link.
+
+=cut
+
 function add(a, b) {
 	return a + b;
 }

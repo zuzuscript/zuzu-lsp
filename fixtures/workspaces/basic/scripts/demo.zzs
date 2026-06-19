@@ -1,6 +1,6 @@
 from example/math import add, Calculator;
 
-function main() {
+function __main__() {
 	let total := add(2, 3);
 	say total;
 }
