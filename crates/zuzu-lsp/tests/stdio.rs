@@ -1830,6 +1830,117 @@ fn publishes_distribution_metadata_diagnostics() {
 }
 
 #[test]
+fn publishes_distribution_metadata_toolchain_diagnostics() {
+    let root = std::env::temp_dir().join(format!(
+        "zuzu-lsp-metadata-toolchain-root-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let home = std::env::temp_dir().join(format!(
+        "zuzu-lsp-metadata-toolchain-home-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&home).unwrap();
+    let metadata_path = root.join("zuzu-distribution.json");
+    let metadata_text = "{\n\t\"name\": \"missing-tools\",\n\t\"dependencies\": {}\n}\n";
+    std::fs::write(&metadata_path, metadata_text).unwrap();
+    let metadata_uri = Url::from_file_path(&metadata_path).unwrap().to_string();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zuzu-lsp"))
+        .arg("--stdio")
+        .env("PATH", "")
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn zuzu-lsp");
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "processId": null,
+                "rootUri": Url::from_file_path(&root).unwrap().to_string(),
+                "capabilities": {}
+            }
+        }),
+    );
+    let initialize = read_response(&mut reader, 1);
+    assert_eq!(initialize["result"]["serverInfo"]["name"], "zuzu-lsp");
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": metadata_uri,
+                    "languageId": "json",
+                    "version": 1,
+                    "text": metadata_text
+                }
+            }
+        }),
+    );
+    let diagnostics = read_method(&mut reader, "textDocument/publishDiagnostics");
+    assert_eq!(diagnostics["params"]["uri"], metadata_uri);
+    assert!(diagnostics["params"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(
+            |diagnostic| diagnostic["code"] == "missing-package-verifier"
+                && diagnostic["source"] == "zuzu-toolchain"
+        ));
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/diagnostic",
+            "params": {
+                "textDocument": { "uri": metadata_uri },
+                "identifier": "zuzu",
+                "previousResultId": null
+            }
+        }),
+    );
+    let pulled_diagnostics = read_response(&mut reader, 2);
+    assert!(pulled_diagnostics["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(
+            |diagnostic| diagnostic["code"] == "missing-package-verifier"
+                && diagnostic["source"] == "zuzu-toolchain"
+        ));
+
+    let _ = std::fs::remove_file(metadata_path);
+    let _ = std::fs::remove_dir(root);
+    let _ = std::fs::remove_dir(home);
+
+    shutdown(&mut child, stdin, &mut reader);
+}
+
+#[test]
 fn cancels_workspace_diagnostics() {
     let root = fixture_root();
     let mut child = Command::new(env!("CARGO_BIN_EXE_zuzu-lsp"))

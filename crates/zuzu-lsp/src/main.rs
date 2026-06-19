@@ -609,7 +609,7 @@ impl Server {
                     let diagnostics = self.with_toolchain_diagnostics(&uri, &text, diagnostics);
                     self.publish_diagnostics(uri, version, diagnostics)
                 } else if is_distribution_metadata {
-                    self.publish_diagnostics(uri, version, distribution_metadata_diagnostics(&text))
+                    self.publish_diagnostics(uri, version, self.metadata_diagnostics(&text))
                 } else {
                     self.publish_diagnostics(uri, version, Vec::new())
                 }
@@ -631,11 +631,7 @@ impl Server {
                     let diagnostics = self.with_toolchain_diagnostics(&uri, &text, diagnostics);
                     self.publish_diagnostics(uri, version, diagnostics)?;
                 } else if document.is_distribution_metadata() {
-                    self.publish_diagnostics(
-                        uri,
-                        version,
-                        distribution_metadata_diagnostics(&text),
-                    )?;
+                    self.publish_diagnostics(uri, version, self.metadata_diagnostics(&text))?;
                 } else {
                     self.analyzer.remove_document(&uri);
                     self.publish_diagnostics(uri, version, Vec::new())?;
@@ -1086,12 +1082,18 @@ impl Server {
         let (id, params): (RequestId, DocumentDiagnosticParams) =
             request.extract(DocumentDiagnosticRequest::METHOD)?;
         let uri = params.text_document.uri.to_string();
-        let diagnostics = self
-            .analyzer
-            .diagnostics(&uri)
-            .into_iter()
-            .map(to_diagnostic)
-            .collect();
+        let diagnostics = if let Some(document) = self.text_documents.get(&uri) {
+            if document.is_distribution_metadata() {
+                self.metadata_diagnostics(&document.text())
+            } else {
+                self.analyzer.diagnostics(&uri)
+            }
+        } else {
+            self.analyzer.diagnostics(&uri)
+        }
+        .into_iter()
+        .map(to_diagnostic)
+        .collect();
         self.send_response(Response::new_ok(
             id,
             document_diagnostic_report(diagnostics),
@@ -1556,6 +1558,12 @@ impl Server {
         diagnostics
     }
 
+    fn metadata_diagnostics(&self, text: &str) -> Vec<Diagnostic> {
+        let mut diagnostics = distribution_metadata_diagnostics(text);
+        diagnostics.extend(package_toolchain_diagnostics(&self.toolchain));
+        diagnostics
+    }
+
     fn runtime_parser_diagnostics(&self, text: &str) -> Vec<Diagnostic> {
         if !self.workspace_trusted
             || !self.settings.runtime_parser_diagnostics
@@ -1597,6 +1605,19 @@ fn toolchain_diagnostics(uri: &str, toolchain: &Toolchain) -> Vec<Diagnostic> {
         diagnostics.push(toolchain_diagnostic(
             "missing-test-runner",
             "`zuzuprove` was not found; test commands are unavailable",
+        ));
+    }
+
+    diagnostics
+}
+
+fn package_toolchain_diagnostics(toolchain: &Toolchain) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    if toolchain.zuzubox.is_none() {
+        diagnostics.push(toolchain_diagnostic(
+            "missing-package-verifier",
+            "`zuzubox` was not found; package verification commands are unavailable",
         ));
     }
 
@@ -2608,5 +2629,10 @@ mod tests {
         assert!(test_diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "missing-test-runner"));
+
+        let package_diagnostics = package_toolchain_diagnostics(&Toolchain::default());
+        assert!(package_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "missing-package-verifier"));
     }
 }
