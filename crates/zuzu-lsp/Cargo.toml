@@ -1,0 +1,16 @@
+[package]
+name = "zuzu-lsp"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+lsp-server.workspace = true
+lsp-types.workspace = true
+serde_json.workspace = true
+url.workspace = true
+zuzu-analysis = { path = "../zuzu-analysis" }
+zuzu-toolchain = { path = "../zuzu-toolchain" }
