@@ -44,11 +44,11 @@ use lsp_types::{
     SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
     SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
-    SignatureInformation, TextDocumentContentChangeEvent, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit,
-    TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams,
-    TypeHierarchySupertypesParams, Uri, WorkDoneProgress, WorkDoneProgressBegin,
-    WorkDoneProgressEnd, WorkDoneProgressOptions, WorkspaceDiagnosticParams,
+    SignatureInformation, TextDocumentContentChangeEvent, TextDocumentEdit,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextEdit, TypeHierarchyItem, TypeHierarchyPrepareParams,
+    TypeHierarchySubtypesParams, TypeHierarchySupertypesParams, Uri, WorkDoneProgress,
+    WorkDoneProgressBegin, WorkDoneProgressEnd, WorkDoneProgressOptions, WorkspaceDiagnosticParams,
     WorkspaceDiagnosticReport, WorkspaceDiagnosticReportResult, WorkspaceDocumentDiagnosticReport,
     WorkspaceEdit, WorkspaceFoldersServerCapabilities, WorkspaceFullDocumentDiagnosticReport,
     WorkspaceServerCapabilities, WorkspaceSymbol, WorkspaceSymbolParams,
@@ -1761,18 +1761,34 @@ fn workspace_edit(edits: Vec<zuzu_analysis::WorkspaceTextEdit>) -> Option<Worksp
         return None;
     }
 
-    let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
+    let mut changes: BTreeMap<String, Vec<TextEdit>> = BTreeMap::new();
     for edit in edits {
-        let Some(uri) = parse_uri(&edit.uri) else {
+        if parse_uri(&edit.uri).is_none() {
             continue;
-        };
-        changes.entry(uri).or_default().push(TextEdit {
+        }
+        changes.entry(edit.uri).or_default().push(TextEdit {
             range: to_range(edit.edit.range),
             new_text: edit.edit.new_text,
         });
     }
 
-    (!changes.is_empty()).then(|| WorkspaceEdit::new(changes))
+    let document_changes = changes
+        .into_iter()
+        .filter_map(|(uri, edits)| {
+            Some(DocumentChangeOperation::Edit(TextDocumentEdit {
+                text_document: lsp_types::OptionalVersionedTextDocumentIdentifier {
+                    uri: parse_uri(&uri)?,
+                    version: None,
+                },
+                edits: edits.into_iter().map(OneOf::Left).collect(),
+            }))
+        })
+        .collect::<Vec<_>>();
+
+    (!document_changes.is_empty()).then(|| WorkspaceEdit {
+        document_changes: Some(DocumentChanges::Operations(document_changes)),
+        ..Default::default()
+    })
 }
 
 fn code_action_for_import_fix(fix: ImportFix) -> Option<CodeActionOrCommand> {
@@ -2372,7 +2388,7 @@ mod tests {
                 }
             }
         }))
-        .resolve(&[root.clone()]);
+        .resolve(std::slice::from_ref(&root));
 
         assert_eq!(
             settings.module_roots,

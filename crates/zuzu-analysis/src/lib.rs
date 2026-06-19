@@ -1341,13 +1341,13 @@ pub fn distribution_metadata_diagnostics(text: &str) -> Vec<Diagnostic> {
 }
 
 fn distribution_metadata_from_text(text: &str) -> (BTreeSet<String>, Vec<Diagnostic>) {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
         return (
             BTreeSet::new(),
             vec![metadata_diagnostic(
                 "metadata-invalid-json",
                 "zuzu-distribution.json is not valid JSON",
-                full_text_range(&text),
+                full_text_range(text),
             )],
         );
     };
@@ -1370,7 +1370,7 @@ fn distribution_metadata_from_text(text: &str) -> (BTreeSet<String>, Vec<Diagnos
             vec![metadata_diagnostic(
                 "metadata-invalid-dependencies",
                 "zuzu-distribution.json dependencies must be an object",
-                full_text_range(&text),
+                full_text_range(text),
             )],
         );
     };
@@ -1383,7 +1383,7 @@ fn distribution_metadata_from_text(text: &str) -> (BTreeSet<String>, Vec<Diagnos
                 full_text_range(text),
             ));
         }
-        if !version.as_str().is_some_and(|version| !version.is_empty()) {
+        if version.as_str().is_none_or(|version| version.is_empty()) {
             diagnostics.push(metadata_diagnostic(
                 "metadata-invalid-dependency-version",
                 "zuzu-distribution.json dependency versions must be non-empty strings",
@@ -2342,7 +2342,7 @@ impl Document {
             .line_offsets
             .get(next_line)
             .copied()
-            .unwrap_or_else(|| self.text.len());
+            .unwrap_or(self.text.len());
         Range::new(
             self.position_for_byte(line_start),
             self.position_for_byte(end),

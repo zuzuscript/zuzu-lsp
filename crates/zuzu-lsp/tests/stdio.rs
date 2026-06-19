@@ -1135,7 +1135,13 @@ exit 0
         }),
     );
     let rename = read_response(&mut reader, 7);
-    let edits = rename["result"]["changes"][&uri].as_array().unwrap();
+    assert_eq!(
+        rename["result"]["documentChanges"][0]["textDocument"]["uri"],
+        uri
+    );
+    let edits = rename["result"]["documentChanges"][0]["edits"]
+        .as_array()
+        .unwrap();
     assert_eq!(edits.len(), 2);
     assert!(edits.iter().all(|edit| edit["newText"] == "sum"));
 
@@ -1407,7 +1413,11 @@ exit 0
         "Import `Calculator` from `example/math`"
     );
     assert_eq!(
-        missing_import_actions["result"][0]["edit"]["changes"][&undefined_uri][0]["newText"],
+        missing_import_actions["result"][0]["edit"]["documentChanges"][0]["textDocument"]["uri"],
+        undefined_uri
+    );
+    assert_eq!(
+        missing_import_actions["result"][0]["edit"]["documentChanges"][0]["edits"][0]["newText"],
         "from example/math import Calculator;\n"
     );
     assert!(missing_import_actions["result"]
