@@ -104,10 +104,12 @@ fn run_stdio() -> Result<()> {
     let (connection, io_threads) = Connection::stdio();
     let (initialize_id, initialize_params_value) = connection.initialize_start()?;
     let workspace_trusted = initialize_workspace_trusted(&initialize_params_value);
+    let initialize_settings = RawServerSettings::from_initialize_params(&initialize_params_value);
     let initialize_params: InitializeParams = serde_json::from_value(initialize_params_value)
         .context("client sent invalid initialize params")?;
 
     let roots = initialize_roots(&initialize_params);
+    let settings = initialize_settings.resolve(&roots);
     let capabilities = capabilities();
     let initialize_result = InitializeResult {
         capabilities,
@@ -121,11 +123,89 @@ fn run_stdio() -> Result<()> {
     initialize_value["capabilities"]["typeHierarchyProvider"] = json!(true);
     connection.initialize_finish(initialize_id, initialize_value)?;
 
-    let mut server = Server::new(roots, connection, workspace_trusted);
+    let mut server = Server::new(roots, connection, workspace_trusted, settings);
     let result = server.run();
     drop(server);
     io_threads.join()?;
     result
+}
+
+#[derive(Debug, Clone, Default)]
+struct RawServerSettings {
+    module_roots: Vec<String>,
+    runtime_parser_diagnostics: Option<bool>,
+}
+
+impl RawServerSettings {
+    fn from_initialize_params(params: &serde_json::Value) -> Self {
+        [
+            params.pointer("/initializationOptions/zuzu"),
+            params.pointer("/initializationOptions/settings/zuzu"),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(Self::from_value)
+        .unwrap_or_default()
+    }
+
+    fn from_configuration_params(params: &serde_json::Value) -> Option<Self> {
+        [
+            params.pointer("/settings/zuzu"),
+            params.pointer("/zuzu"),
+            Some(params),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(Self::from_value)
+    }
+
+    fn from_value(value: &serde_json::Value) -> Option<Self> {
+        let object = value.as_object()?;
+        let module_roots: Vec<String> = object
+            .get("moduleRoots")
+            .or_else(|| object.get("module_roots"))
+            .and_then(|value| value.as_array())
+            .map(|roots| {
+                roots
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let runtime_parser_diagnostics = object
+            .get("runtimeParserDiagnostics")
+            .or_else(|| object.get("runtime_parser_diagnostics"))
+            .and_then(|value| value.as_bool());
+        if module_roots.is_empty() && runtime_parser_diagnostics.is_none() {
+            return None;
+        }
+        Some(Self {
+            module_roots,
+            runtime_parser_diagnostics,
+        })
+    }
+
+    fn resolve(self, roots: &[PathBuf]) -> ServerSettings {
+        ServerSettings {
+            module_roots: resolve_configured_module_roots(&self.module_roots, roots),
+            runtime_parser_diagnostics: self.runtime_parser_diagnostics.unwrap_or(true),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ServerSettings {
+    module_roots: Vec<PathBuf>,
+    runtime_parser_diagnostics: bool,
+}
+
+impl Default for ServerSettings {
+    fn default() -> Self {
+        Self {
+            module_roots: Vec::new(),
+            runtime_parser_diagnostics: true,
+        }
+    }
 }
 
 fn initialize_workspace_trusted(params: &serde_json::Value) -> bool {
@@ -261,6 +341,44 @@ fn normalize_roots(mut roots: Vec<PathBuf>) -> Vec<PathBuf> {
     roots
 }
 
+fn configured_module_roots(settings: &ServerSettings, toolchain: &Toolchain) -> Vec<PathBuf> {
+    let mut roots = settings.module_roots.clone();
+    roots.extend(toolchain.module_search_paths.clone());
+    dedup_path_order(&mut roots);
+    roots
+}
+
+fn resolve_configured_module_roots(roots: &[String], workspace_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let base = workspace_roots.first();
+    let mut resolved: Vec<PathBuf> = roots
+        .iter()
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else if let Some(base) = base {
+                base.join(path)
+            } else {
+                path
+            }
+        })
+        .collect();
+    dedup_path_order(&mut resolved);
+    resolved
+}
+
+fn dedup_path_order(paths: &mut Vec<PathBuf>) {
+    let mut seen = Vec::new();
+    paths.retain(|path| {
+        if seen.iter().any(|seen_path| seen_path == path) {
+            false
+        } else {
+            seen.push(path.clone());
+            true
+        }
+    });
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DocumentKind {
     Script,
@@ -349,6 +467,7 @@ impl DocumentSnapshot {
 struct Server {
     analyzer: Analyzer,
     toolchain: Toolchain,
+    settings: ServerSettings,
     doc_cache: HashMap<PathBuf, Option<String>>,
     text_documents: HashMap<String, DocumentSnapshot>,
     connection: Connection,
@@ -357,13 +476,21 @@ struct Server {
 }
 
 impl Server {
-    fn new(roots: Vec<PathBuf>, connection: Connection, workspace_trusted: bool) -> Self {
+    fn new(
+        roots: Vec<PathBuf>,
+        connection: Connection,
+        workspace_trusted: bool,
+        settings: ServerSettings,
+    ) -> Self {
         let toolchain = Toolchain::discover(&roots);
-        let analyzer =
-            Analyzer::with_module_roots(roots.clone(), toolchain.module_search_paths.clone());
+        let analyzer = Analyzer::with_module_roots(
+            roots.clone(),
+            configured_module_roots(&settings, &toolchain),
+        );
         Self {
             analyzer,
             toolchain,
+            settings,
             doc_cache: HashMap::new(),
             text_documents: HashMap::new(),
             connection,
@@ -495,7 +622,13 @@ impl Server {
                 let _params: DidChangeWatchedFilesParams = serde_json::from_value(params)?;
                 self.refresh_workspace_configuration()
             }
-            DidChangeConfiguration::METHOD => self.refresh_workspace_configuration(),
+            DidChangeConfiguration::METHOD => {
+                let roots = self.analyzer.workspace().roots().to_vec();
+                if let Some(settings) = RawServerSettings::from_configuration_params(&params) {
+                    self.settings = settings.resolve(&roots);
+                }
+                self.refresh_workspace_configuration()
+            }
             _ => Ok(()),
         }
     }
@@ -521,8 +654,10 @@ impl Server {
 
     fn reset_workspace(&mut self, roots: Vec<PathBuf>) -> Result<()> {
         self.toolchain = Toolchain::discover(&roots);
-        self.analyzer =
-            Analyzer::with_module_roots(roots, self.toolchain.module_search_paths.clone());
+        self.analyzer = Analyzer::with_module_roots(
+            roots,
+            configured_module_roots(&self.settings, &self.toolchain),
+        );
         self.doc_cache.clear();
 
         let open_documents: Vec<(String, String, Option<i32>)> = self
@@ -1331,7 +1466,10 @@ impl Server {
     }
 
     fn runtime_parser_diagnostics(&self, text: &str) -> Vec<Diagnostic> {
-        if !self.workspace_trusted || self.toolchain.zuzu.is_none() {
+        if !self.workspace_trusted
+            || !self.settings.runtime_parser_diagnostics
+            || self.toolchain.zuzu.is_none()
+        {
             return Vec::new();
         }
 
@@ -2207,6 +2345,45 @@ mod tests {
                 }
             }
         })));
+    }
+
+    #[test]
+    fn reads_server_settings_from_initialize_payload() {
+        let root = PathBuf::from("/workspace/project");
+        let settings = RawServerSettings::from_initialize_params(&json!({
+            "initializationOptions": {
+                "zuzu": {
+                    "moduleRoots": ["modules-extra", "/opt/zuzu/modules"],
+                    "runtimeParserDiagnostics": false
+                }
+            }
+        }))
+        .resolve(&[root.clone()]);
+
+        assert_eq!(
+            settings.module_roots,
+            vec![
+                root.join("modules-extra"),
+                PathBuf::from("/opt/zuzu/modules")
+            ]
+        );
+        assert!(!settings.runtime_parser_diagnostics);
+    }
+
+    #[test]
+    fn reads_server_settings_from_configuration_payload() {
+        let settings = RawServerSettings::from_configuration_params(&json!({
+            "settings": {
+                "zuzu": {
+                    "module_roots": ["vendor/modules"],
+                    "runtime_parser_diagnostics": true
+                }
+            }
+        }))
+        .expect("settings");
+
+        assert_eq!(settings.module_roots, vec!["vendor/modules"]);
+        assert_eq!(settings.runtime_parser_diagnostics, Some(true));
     }
 
     #[test]

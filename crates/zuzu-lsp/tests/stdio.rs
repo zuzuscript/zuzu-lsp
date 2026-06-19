@@ -68,6 +68,15 @@ exit 0
     let extra_module_dir = extra_root.join("modules").join("extra");
     std::fs::create_dir_all(&extra_module_dir).unwrap();
     std::fs::write(extra_module_dir.join("thing.zzm"), "class Thing;\n").unwrap();
+    let configured_root =
+        std::env::temp_dir().join(format!("zuzu-lsp-configured-root-{}", std::process::id()));
+    let configured_module_dir = configured_root.join("configured");
+    std::fs::create_dir_all(&configured_module_dir).unwrap();
+    std::fs::write(
+        configured_module_dir.join("module.zzm"),
+        "class Configured;\n",
+    )
+    .unwrap();
 
     let script_path = root.join("scripts").join("demo.zzs");
     let uri = Url::from_file_path(&script_path).unwrap().to_string();
@@ -82,7 +91,12 @@ exit 0
             "params": {
                 "processId": null,
                 "rootUri": Url::from_file_path(&root).unwrap().to_string(),
-                "capabilities": {}
+                "capabilities": {},
+                "initializationOptions": {
+                    "zuzu": {
+                        "moduleRoots": [configured_root.display().to_string()]
+                    }
+                }
             }
         }),
     );
@@ -208,6 +222,7 @@ exit 0
         .collect();
     assert!(labels.contains(&"fn"));
     assert!(labels.contains(&"example/math"));
+    assert!(labels.contains(&"configured/module"));
 
     send(
         &mut stdin,
@@ -1448,6 +1463,9 @@ exit 0
     let _ = std::fs::remove_dir(extra_module_dir);
     let _ = std::fs::remove_dir(extra_root.join("modules"));
     let _ = std::fs::remove_dir(extra_root);
+    let _ = std::fs::remove_file(configured_module_dir.join("module.zzm"));
+    let _ = std::fs::remove_dir(configured_module_dir);
+    let _ = std::fs::remove_dir(configured_root);
     let _ = std::fs::remove_file(tool_root.join("zuzu-tidy.pl"));
     let _ = std::fs::remove_file(tool_root.join("zuzuprove"));
     let _ = std::fs::remove_file(tool_root.join("pod_parse"));
@@ -1580,6 +1598,107 @@ fn refuses_tool_execution_in_untrusted_workspace() {
         .as_str()
         .unwrap()
         .contains("untrusted"));
+
+    shutdown(&mut child, stdin, &mut reader);
+}
+
+#[test]
+fn can_disable_runtime_parser_diagnostics_with_settings() {
+    let tool_root = std::env::temp_dir().join(format!(
+        "zuzu-lsp-parser-settings-tool-root-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&tool_root).unwrap();
+    write_fake_command(
+        &tool_root.join("zuzu"),
+        r#"if [ "$1" = "-V" ]; then
+	printf 'zuzu-rust version test\nmodule search paths:\n'
+	exit 0
+fi
+if [ "$1" = "--lint" ]; then
+	printf 'parse error at 1:10: Expected expression\n' >&2
+	exit 1
+fi
+exit 0
+"#,
+    );
+    let mut path_entries = vec![tool_root.clone()];
+    if let Some(path) = std::env::var_os("PATH") {
+        path_entries.extend(std::env::split_paths(&path));
+    }
+    let test_path = std::env::join_paths(path_entries).unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zuzu-lsp"))
+        .arg("--stdio")
+        .env("PATH", test_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn zuzu-lsp");
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+
+    let root = fixture_root();
+    let parser_bad_uri = Url::from_file_path(root.join("scripts").join("parser-disabled.zzs"))
+        .unwrap()
+        .to_string();
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "processId": null,
+                "rootUri": Url::from_file_path(&root).unwrap().to_string(),
+                "capabilities": {},
+                "initializationOptions": {
+                    "zuzu": {
+                        "runtimeParserDiagnostics": false
+                    }
+                }
+            }
+        }),
+    );
+    let initialize = read_response(&mut reader, 1);
+    assert_eq!(initialize["result"]["serverInfo"]["name"], "zuzu-lsp");
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": parser_bad_uri,
+                    "languageId": "zuzu",
+                    "version": 1,
+                    "text": "let x := ;\n"
+                }
+            }
+        }),
+    );
+    let diagnostics = read_method(&mut reader, "textDocument/publishDiagnostics");
+    assert_eq!(diagnostics["params"]["uri"], parser_bad_uri);
+    assert!(!diagnostics["params"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| diagnostic["source"].as_str() == Some("zuzu-parser")));
+
+    let _ = std::fs::remove_file(tool_root.join("zuzu"));
+    let _ = std::fs::remove_dir(tool_root);
 
     shutdown(&mut child, stdin, &mut reader);
 }

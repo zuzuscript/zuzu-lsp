@@ -55,3 +55,22 @@ For a quick local health check:
 ```sh
 cargo run -p zuzu-lsp -- doctor
 ```
+
+## Configuration
+
+Clients may pass a `zuzu` settings object through initialization options or
+`workspace/didChangeConfiguration`.
+
+```json
+{
+  "zuzu": {
+    "moduleRoots": ["vendor/modules"],
+    "runtimeParserDiagnostics": true
+  }
+}
+```
+
+`moduleRoots` adds extra module search roots ahead of toolchain-discovered
+paths. Relative paths are resolved against the first workspace root.
+`runtimeParserDiagnostics` controls trusted-workspace `zuzu --lint -e`
+diagnostics; it defaults to `true`.
