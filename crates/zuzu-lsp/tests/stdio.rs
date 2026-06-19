@@ -1812,6 +1812,97 @@ fn publishes_distribution_metadata_diagnostics() {
     shutdown(&mut child, stdin, &mut reader);
 }
 
+#[test]
+fn cancels_workspace_diagnostics() {
+    let root = fixture_root();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zuzu-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn zuzu-lsp");
+    let mut stdin = child.stdin.take().expect("server stdin");
+    let stdout = child.stdout.take().expect("server stdout");
+    let mut reader = BufReader::new(stdout);
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "processId": null,
+                "rootUri": Url::from_file_path(root).unwrap().to_string(),
+                "capabilities": {}
+            }
+        }),
+    );
+    let initialize = read_response(&mut reader, 1);
+    assert_eq!(initialize["result"]["serverInfo"]["name"], "zuzu-lsp");
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": {
+                "id": 2
+            }
+        }),
+    );
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "workspace/diagnostic",
+            "params": {
+                "identifier": "zuzu",
+                "previousResultIds": [],
+                "workDoneToken": "cancelled-workspace-diagnostics"
+            }
+        }),
+    );
+
+    let progress_begin = read_method(&mut reader, "$/progress");
+    assert_eq!(
+        progress_begin["params"]["token"],
+        "cancelled-workspace-diagnostics"
+    );
+    assert_eq!(progress_begin["params"]["value"]["kind"], "begin");
+    assert_eq!(progress_begin["params"]["value"]["cancellable"], true);
+
+    let progress_end = read_method(&mut reader, "$/progress");
+    assert_eq!(
+        progress_end["params"]["token"],
+        "cancelled-workspace-diagnostics"
+    );
+    assert_eq!(progress_end["params"]["value"]["kind"], "end");
+    assert_eq!(
+        progress_end["params"]["value"]["message"],
+        "Workspace diagnostics cancelled"
+    );
+
+    let response = read_response(&mut reader, 2);
+    assert_eq!(response["error"]["code"], -32800);
+    assert_eq!(
+        response["error"]["message"],
+        "Workspace diagnostics cancelled"
+    );
+
+    shutdown(&mut child, stdin, &mut reader);
+}
+
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")

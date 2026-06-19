@@ -1,11 +1,11 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use lsp_server::{Connection, ErrorCode, Message, Request, RequestId, Response, ResponseError};
 use lsp_types::notification::{
-    DidChangeConfiguration, DidChangeTextDocument, DidChangeWatchedFiles,
+    Cancel, DidChangeConfiguration, DidChangeTextDocument, DidChangeWatchedFiles,
     DidChangeWorkspaceFolders, DidCloseTextDocument, DidOpenTextDocument, Initialized, LogMessage,
     Notification, Progress as ProgressNotification,
 };
@@ -22,7 +22,7 @@ use lsp_types::request::{
 use lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem,
     CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
-    CallHierarchyServerCapability, CodeAction, CodeActionKind, CodeActionOptions,
+    CallHierarchyServerCapability, CancelParams, CodeAction, CodeActionKind, CodeActionOptions,
     CodeActionOrCommand, CodeActionProviderCapability, CodeLens, CodeLensOptions,
     Command as LspCommand, CompletionOptions, CompletionResponse, CreateFile, CreateFileOptions,
     Diagnostic as LspDiagnostic, DiagnosticOptions, DiagnosticServerCapabilities,
@@ -36,13 +36,13 @@ use lsp_types::{
     FullDocumentDiagnosticReport, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
     InitializeParams, InitializeResult, InlayHint, InlayHintKind, InlayHintLabel, InlayHintOptions,
     InlayHintParams, InlayHintServerCapabilities, Location, LogMessageParams, MarkedString,
-    MarkupContent, MarkupKind, MessageType, OneOf, ParameterInformation, ParameterLabel, Position,
-    PrepareRenameResponse, ProgressParams, ProgressParamsValue, ProgressToken,
-    PublishDiagnosticsParams, Range, ReferenceParams, RelatedFullDocumentDiagnosticReport,
-    RenameOptions, RenameParams, ResourceOp, SelectionRange as LspSelectionRange,
-    SelectionRangeParams, SemanticToken as LspSemanticToken, SemanticTokenModifier,
-    SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
-    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    MarkupContent, MarkupKind, MessageType, NumberOrString, OneOf, ParameterInformation,
+    ParameterLabel, Position, PrepareRenameResponse, ProgressParams, ProgressParamsValue,
+    ProgressToken, PublishDiagnosticsParams, Range, ReferenceParams,
+    RelatedFullDocumentDiagnosticReport, RenameOptions, RenameParams, ResourceOp,
+    SelectionRange as LspSelectionRange, SelectionRangeParams, SemanticToken as LspSemanticToken,
+    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
     SignatureInformation, TextDocumentContentChangeEvent, TextDocumentEdit,
     TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
@@ -342,6 +342,13 @@ fn normalize_roots(mut roots: Vec<PathBuf>) -> Vec<PathBuf> {
     roots
 }
 
+fn request_id_from_number_or_string(id: NumberOrString) -> RequestId {
+    match id {
+        NumberOrString::Number(id) => RequestId::from(id),
+        NumberOrString::String(id) => RequestId::from(id),
+    }
+}
+
 fn configured_module_roots(settings: &ServerSettings, toolchain: &Toolchain) -> Vec<PathBuf> {
     let mut roots = settings.module_roots.clone();
     roots.extend(toolchain.module_search_paths.clone());
@@ -475,6 +482,8 @@ struct Server {
     settings: ServerSettings,
     doc_cache: HashMap<PathBuf, Option<String>>,
     text_documents: HashMap<String, DocumentSnapshot>,
+    queued_messages: VecDeque<Message>,
+    cancelled_requests: BTreeSet<RequestId>,
     connection: Connection,
     shutdown_requested: bool,
     workspace_trusted: bool,
@@ -498,6 +507,8 @@ impl Server {
             settings,
             doc_cache: HashMap::new(),
             text_documents: HashMap::new(),
+            queued_messages: VecDeque::new(),
+            cancelled_requests: BTreeSet::new(),
             connection,
             shutdown_requested: false,
             workspace_trusted,
@@ -505,7 +516,7 @@ impl Server {
     }
 
     fn run(&mut self) -> Result<()> {
-        while let Ok(message) = self.connection.receiver.recv() {
+        while let Some(message) = self.next_message()? {
             match message {
                 Message::Request(request) => {
                     self.handle_request(request)?;
@@ -523,6 +534,16 @@ impl Server {
             }
         }
         Ok(())
+    }
+
+    fn next_message(&mut self) -> Result<Option<Message>> {
+        if let Some(message) = self.queued_messages.pop_front() {
+            return Ok(Some(message));
+        }
+        match self.connection.receiver.recv() {
+            Ok(message) => Ok(Some(message)),
+            Err(_) => Ok(None),
+        }
     }
 
     fn handle_request(&mut self, request: Request) -> Result<()> {
@@ -568,6 +589,7 @@ impl Server {
 
     fn handle_notification(&mut self, method: String, params: serde_json::Value) -> Result<()> {
         match method.as_str() {
+            Cancel::METHOD => self.cancel_request(params),
             DidOpenTextDocument::METHOD => {
                 let params: DidOpenTextDocumentParams = serde_json::from_value(params)?;
                 let uri = params.text_document.uri.to_string();
@@ -645,6 +667,29 @@ impl Server {
             }
             _ => Ok(()),
         }
+    }
+
+    fn cancel_request(&mut self, params: serde_json::Value) -> Result<()> {
+        let params: CancelParams = serde_json::from_value(params)?;
+        self.cancelled_requests
+            .insert(request_id_from_number_or_string(params.id));
+        Ok(())
+    }
+
+    fn drain_cancellation_notifications(&mut self) -> Result<()> {
+        while let Ok(message) = self.connection.receiver.try_recv() {
+            match message {
+                Message::Notification(notification) if notification.method == Cancel::METHOD => {
+                    self.cancel_request(notification.params)?;
+                }
+                other => self.queued_messages.push_back(other),
+            }
+        }
+        Ok(())
+    }
+
+    fn consume_cancelled_request(&mut self, id: &RequestId) -> bool {
+        self.cancelled_requests.remove(id)
     }
 
     fn change_workspace_folders(&mut self, params: DidChangeWorkspaceFoldersParams) -> Result<()> {
@@ -1062,15 +1107,23 @@ impl Server {
                 token.clone(),
                 WorkDoneProgress::Begin(WorkDoneProgressBegin {
                     title: "ZuzuScript workspace diagnostics".to_string(),
-                    cancellable: Some(false),
+                    cancellable: Some(true),
                     message: Some("Collecting workspace diagnostics".to_string()),
                     percentage: None,
                 }),
             )?;
         }
+        self.drain_cancellation_notifications()?;
+        if self.consume_cancelled_request(&id) {
+            return self.cancel_workspace_diagnostic(id, progress_token);
+        }
 
         let mut grouped: BTreeMap<String, Vec<LspDiagnostic>> = BTreeMap::new();
         for diagnostic in self.analyzer.package_report(None).diagnostics {
+            self.drain_cancellation_notifications()?;
+            if self.consume_cancelled_request(&id) {
+                return self.cancel_workspace_diagnostic(id, progress_token);
+            }
             grouped
                 .entry(diagnostic.uri.clone())
                 .or_default()
@@ -1091,6 +1144,10 @@ impl Server {
                 ))
             })
             .collect();
+        self.drain_cancellation_notifications()?;
+        if self.consume_cancelled_request(&id) {
+            return self.cancel_workspace_diagnostic(id, progress_token);
+        }
         if let Some(token) = progress_token {
             self.send_work_done_progress(
                 token,
@@ -1102,6 +1159,26 @@ impl Server {
         self.send_response(Response::new_ok(
             id,
             WorkspaceDiagnosticReportResult::Report(WorkspaceDiagnosticReport { items }),
+        ))
+    }
+
+    fn cancel_workspace_diagnostic(
+        &self,
+        id: RequestId,
+        progress_token: Option<ProgressToken>,
+    ) -> Result<()> {
+        if let Some(token) = progress_token {
+            self.send_work_done_progress(
+                token,
+                WorkDoneProgress::End(WorkDoneProgressEnd {
+                    message: Some("Workspace diagnostics cancelled".to_string()),
+                }),
+            )?;
+        }
+        self.send_response(Response::new_err(
+            id,
+            ErrorCode::RequestCanceled as i32,
+            "Workspace diagnostics cancelled".to_string(),
         ))
     }
 
