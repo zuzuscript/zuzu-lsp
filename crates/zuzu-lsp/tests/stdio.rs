@@ -1824,7 +1824,8 @@ fn publishes_distribution_metadata_diagnostics() {
         std::env::temp_dir().join(format!("zuzu-lsp-bad-metadata-root-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let metadata_path = root.join("zuzu-distribution.json");
-    let valid_metadata = "{\n\t\"name\": \"live-metadata\",\n\t\"dependencies\": {}\n}\n";
+    let valid_metadata =
+        "{\n\t\"name\": \"live-metadata\",\n\t\"version\": \"0.0.1\",\n\t\"dependencies\": {}\n}\n";
     std::fs::write(&metadata_path, valid_metadata).unwrap();
     let metadata_uri = Url::from_file_path(&metadata_path).unwrap().to_string();
 

@@ -1361,20 +1361,36 @@ fn distribution_metadata_from_text(text: &str) -> (BTreeSet<String>, Vec<Diagnos
             )],
         );
     };
+    let mut diagnostics = Vec::new();
+    for required in ["name", "version"] {
+        if metadata
+            .get(required)
+            .and_then(|value| value.as_str())
+            .is_none_or(str::is_empty)
+        {
+            diagnostics.push(metadata_diagnostic(
+                match required {
+                    "name" => "metadata-missing-name",
+                    "version" => "metadata-missing-version",
+                    _ => unreachable!(),
+                },
+                format!("zuzu-distribution.json must include a non-empty `{required}` string"),
+                full_text_range(text),
+            ));
+        }
+    }
     let Some(dependencies) = metadata.get("dependencies") else {
-        return (BTreeSet::new(), Vec::new());
+        return (BTreeSet::new(), diagnostics);
     };
     let Some(dependencies) = dependencies.as_object() else {
-        return (
-            BTreeSet::new(),
-            vec![metadata_diagnostic(
-                "metadata-invalid-dependencies",
-                "zuzu-distribution.json dependencies must be an object",
-                full_text_range(text),
-            )],
-        );
+        diagnostics.push(metadata_diagnostic(
+            "metadata-invalid-dependencies",
+            "zuzu-distribution.json dependencies must be an object",
+            full_text_range(text),
+        ));
+        return (BTreeSet::new(), diagnostics);
     };
-    let mut diagnostics = Vec::new();
+    let dependency_diagnostic_count = diagnostics.len();
     for (name, version) in dependencies {
         if name.is_empty() {
             diagnostics.push(metadata_diagnostic(
@@ -1391,10 +1407,10 @@ fn distribution_metadata_from_text(text: &str) -> (BTreeSet<String>, Vec<Diagnos
             ));
         }
     }
-    if !diagnostics.is_empty() {
+    if diagnostics.len() > dependency_diagnostic_count {
         return (BTreeSet::new(), diagnostics);
     }
-    (dependencies.keys().cloned().collect(), Vec::new())
+    (dependencies.keys().cloned().collect(), diagnostics)
 }
 
 fn metadata_diagnostic(code: &'static str, message: impl Into<String>, range: Range) -> Diagnostic {
@@ -3781,10 +3797,26 @@ mod tests {
             .any(|diagnostic| diagnostic.code == "metadata-root-not-object"));
 
         fs::write(
-			root.join("zuzu-distribution.json"),
-			"{\n\t\"name\": \"bad-metadata\",\n\t\"dependencies\": {\n\t\t\"\": \"0\",\n\t\t\"dep\": 1\n\t}\n}\n",
-		)
-		.unwrap();
+            root.join("zuzu-distribution.json"),
+            "{\n\t\"dependencies\": {\n\t\t\"dep\": \"0\"\n\t}\n}\n",
+        )
+        .unwrap();
+        let analyzer = Analyzer::new(vec![root.clone()]);
+        let diagnostics = analyzer.diagnostics(&metadata_uri);
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "metadata-missing-name"));
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "metadata-missing-version"));
+        let report = analyzer.package_report(Some(&root.join("zuzu-distribution.json")));
+        assert_eq!(report.dependencies, vec!["dep"]);
+
+        fs::write(
+            root.join("zuzu-distribution.json"),
+            "{\n\t\"name\": \"bad-metadata\",\n\t\"dependencies\": {\n\t\t\"\": \"0\",\n\t\t\"dep\": 1\n\t}\n}\n",
+        )
+        .unwrap();
         let analyzer = Analyzer::new(vec![root.clone()]);
         let diagnostics = analyzer.diagnostics(&metadata_uri);
         assert!(diagnostics
