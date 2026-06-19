@@ -771,7 +771,10 @@ mod tests {
         let root = unique_temp_dir("zuzu-toolchain-format-failure");
         fs::create_dir_all(&root).unwrap();
         let script = root.join("zuzu-tidy.pl");
-        write_fake_command(&script, "printf 'bad input\\n' >&2\nexit 7\n");
+        write_fake_command(
+            &script,
+            "cat >/dev/null\nprintf 'bad input\\n' >&2\nexit 7\n",
+        );
 
         let toolchain = Toolchain {
             tidy: Some(script),
