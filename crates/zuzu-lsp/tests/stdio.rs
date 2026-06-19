@@ -820,6 +820,45 @@ exit 0
         &mut stdin,
         json!({
             "jsonrpc": "2.0",
+            "method": "workspace/didChangeWatchedFiles",
+            "params": {
+                "changes": [
+                    {
+                        "uri": metadata_uri,
+                        "type": 2
+                    }
+                ]
+            }
+        }),
+    );
+    let mut refreshed_metadata_diagnostics = None;
+    let mut saw_zuzu_diagnostics = false;
+    for _ in 0..8 {
+        let message = read_method(&mut reader, "textDocument/publishDiagnostics");
+        if message["params"]["uri"] == uri {
+            saw_zuzu_diagnostics = true;
+        }
+        if message["params"]["uri"] == metadata_uri {
+            refreshed_metadata_diagnostics = Some(message);
+        }
+        if refreshed_metadata_diagnostics.is_some() && saw_zuzu_diagnostics {
+            break;
+        }
+    }
+    assert!(
+        saw_zuzu_diagnostics,
+        "zuzu diagnostics after workspace refresh"
+    );
+    assert_eq!(
+        refreshed_metadata_diagnostics.expect("metadata diagnostics after workspace refresh")
+            ["params"]["diagnostics"],
+        json!([])
+    );
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
             "id": 15,
             "method": "textDocument/documentLink",
             "params": {

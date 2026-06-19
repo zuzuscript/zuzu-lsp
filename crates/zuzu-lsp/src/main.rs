@@ -715,16 +715,26 @@ impl Server {
         );
         self.doc_cache.clear();
 
-        let open_documents: Vec<(String, String, Option<i32>)> = self
+        let open_documents: Vec<(String, String, Option<i32>, bool, bool)> = self
             .text_documents
             .iter()
-            .map(|(uri, document)| (uri.clone(), document.text(), document.version))
+            .map(|(uri, document)| {
+                (
+                    uri.clone(),
+                    document.text(),
+                    document.version,
+                    document.is_zuzu_document(),
+                    document.is_distribution_metadata(),
+                )
+            })
             .collect();
-        for (uri, text, version) in open_documents {
-            if is_zuzu_document(&uri, &text) {
+        for (uri, text, version, is_zuzu_document, is_distribution_metadata) in open_documents {
+            if is_zuzu_document {
                 let diagnostics = self.analyzer.upsert_document(&uri, text.as_str());
                 let diagnostics = self.with_toolchain_diagnostics(&uri, &text, diagnostics);
                 self.publish_diagnostics(uri, version, diagnostics)?;
+            } else if is_distribution_metadata {
+                self.publish_diagnostics(uri, version, self.metadata_diagnostics(&text))?;
             }
         }
         Ok(())
@@ -2356,6 +2366,7 @@ fn command_lens(title: &str, command: &str, uri: &str) -> CodeLens {
     }
 }
 
+#[cfg(test)]
 fn is_zuzu_document(uri: &str, text: &str) -> bool {
     matches!(
         classify_document(uri, text),
