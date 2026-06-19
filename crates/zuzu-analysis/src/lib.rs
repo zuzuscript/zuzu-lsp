@@ -750,14 +750,16 @@ impl Analyzer {
         let Some(word) = document.word_at(position) else {
             return Vec::new();
         };
-        let declaration_range = self
-            .definition(uri, position)
-            .map(|definition| definition.range);
+        let declaration = self.definition(uri, position);
 
         let mut locations = Vec::new();
         for document in self.all_documents() {
             for range in document.word_ranges(&word) {
-                if !include_declaration && Some(range) == declaration_range {
+                if !include_declaration
+                    && declaration.as_ref().is_some_and(|declaration| {
+                        declaration.uri == document.uri && declaration.range == range
+                    })
+                {
                     continue;
                 }
                 locations.push(Location {
@@ -4067,6 +4069,25 @@ mod tests {
 
         let references = analyzer.references("file:///one.zzs", Position::new(1, 7), false);
         assert_eq!(references.len(), 2);
+    }
+
+    #[test]
+    fn keeps_same_range_references_in_other_documents() {
+        let mut analyzer = Analyzer::new(Vec::new());
+        analyzer.upsert_document(
+            "file:///one.zzs",
+            "function main() {\n\tlet total := 1;\n\tsay total;\n}\n",
+        );
+        analyzer.upsert_document(
+            "file:///two.zzs",
+            "function copy() {\n\tlet total := 2;\n\tsay total;\n}\n",
+        );
+
+        let references = analyzer.references("file:///one.zzs", Position::new(1, 7), false);
+        assert!(references.iter().any(|location| {
+            location.uri == "file:///two.zzs"
+                && location.range == Range::new(Position::new(1, 5), Position::new(1, 10))
+        }));
     }
 
     #[test]
