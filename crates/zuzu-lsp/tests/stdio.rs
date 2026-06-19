@@ -20,7 +20,7 @@ fn serves_basic_stdio_requests() {
     );
     write_fake_command(
         &tool_root.join("pod_parse"),
-        "printf 'Fixture arithmetic helpers\\nrendered %s %s %s\\n' \"$1\" \"$2\" \"$3\"\n",
+        "printf '# NAME\\n\\nFixture arithmetic helpers\\n\\n## add\\n\\nAdds two values.\\n\\n## Calculator\\n\\nCalculator class docs.\\n\\nrendered %s %s %s\\n' \"$1\" \"$2\" \"$3\"\n",
     );
     write_fake_command(
         &tool_root.join("zuzubox"),
@@ -395,7 +395,11 @@ exit 0
     assert!(symbol_hover["result"]["contents"]["value"]
         .as_str()
         .unwrap()
-        .contains("Fixture arithmetic helpers"));
+        .contains("Adds two values."));
+    assert!(!symbol_hover["result"]["contents"]["value"]
+        .as_str()
+        .unwrap()
+        .contains("Calculator class docs."));
 
     let incremental_uri = Url::from_file_path(root.join("scripts").join("incremental.zzs"))
         .unwrap()

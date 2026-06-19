@@ -1528,6 +1528,7 @@ impl Server {
         target: zuzu_analysis::SymbolDocumentationTarget,
     ) -> Option<Hover> {
         let markdown = self.documentation_markdown(&target.path)?;
+        let markdown = symbol_documentation_markdown(&markdown, &target.name).unwrap_or(markdown);
         Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
@@ -2247,6 +2248,74 @@ fn metadata_url_links(text: &str) -> Vec<MetadataUrlLink> {
 
 fn is_external_url(target: &str) -> bool {
     target.starts_with("https://") || target.starts_with("http://")
+}
+
+fn symbol_documentation_markdown(markdown: &str, symbol: &str) -> Option<String> {
+    let lines: Vec<_> = markdown.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        let Some((level, heading)) = markdown_heading(line) else {
+            continue;
+        };
+        if !markdown_heading_matches_symbol(heading, symbol) {
+            continue;
+        }
+
+        let end = lines
+            .iter()
+            .enumerate()
+            .skip(index + 1)
+            .find_map(|(next_index, next_line)| {
+                let (next_level, _) = markdown_heading(next_line)?;
+                (next_level <= level).then_some(next_index)
+            })
+            .unwrap_or(lines.len());
+        let section = lines[index..end].join("\n").trim().to_string();
+        if !section.is_empty() {
+            return Some(section);
+        }
+    }
+    None
+}
+
+fn markdown_heading(line: &str) -> Option<(usize, &str)> {
+    let line = line.trim_start();
+    let level = line
+        .chars()
+        .take_while(|character| *character == '#')
+        .count();
+    if !(1..=6).contains(&level) {
+        return None;
+    }
+    let title = line.get(level..)?;
+    if !title.starts_with(' ') {
+        return None;
+    }
+    Some((level, title.trim().trim_end_matches('#').trim_end()))
+}
+
+fn markdown_heading_matches_symbol(heading: &str, symbol: &str) -> bool {
+    let heading = heading.trim_matches('`');
+    heading == symbol
+        || heading
+            .strip_prefix("function ")
+            .is_some_and(|suffix| heading_suffix_matches_symbol(suffix, symbol))
+        || heading
+            .strip_prefix("method ")
+            .is_some_and(|suffix| heading_suffix_matches_symbol(suffix, symbol))
+        || heading
+            .strip_prefix("class ")
+            .is_some_and(|suffix| heading_suffix_matches_symbol(suffix, symbol))
+}
+
+fn heading_suffix_matches_symbol(suffix: &str, symbol: &str) -> bool {
+    let Some(rest) = suffix.strip_prefix(symbol) else {
+        return false;
+    };
+    rest.is_empty()
+        || rest
+            .chars()
+            .next()
+            .is_some_and(|character| !character.is_alphanumeric() && character != '_')
 }
 
 fn find_json_string(text: &str, start: usize, value: &str) -> Option<usize> {
