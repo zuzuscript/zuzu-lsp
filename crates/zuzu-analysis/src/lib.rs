@@ -2577,23 +2577,14 @@ impl Document {
 
     fn call_site_for_node(&self, node: Node) -> Option<CallSite> {
         let function = node.child_by_field_name("function")?;
-        let name = function.utf8_text(self.text.as_bytes()).ok()?;
-        if !is_identifier(name) {
-            return None;
-        }
-        Some(CallSite {
-            name: name.to_string(),
-            range: self.node_range(function),
-        })
+        let (name, range) = self.callable_name_for_function(function)?;
+        Some(CallSite { name, range })
     }
 
     fn call_arguments_for_node(&self, node: Node) -> Option<CallArguments> {
         let function = node.child_by_field_name("function")?;
         let arguments = node.child_by_field_name("arguments")?;
-        let name = function.utf8_text(self.text.as_bytes()).ok()?;
-        if !is_identifier(name) {
-            return None;
-        }
+        let (name, _) = self.callable_name_for_function(function)?;
 
         let mut positions = Vec::new();
         let mut cursor = arguments.walk();
@@ -2613,7 +2604,7 @@ impl Document {
         }
 
         Some(CallArguments {
-            name: name.to_string(),
+            name,
             range: self.node_range(node),
             arguments: positions,
         })
@@ -2654,14 +2645,26 @@ impl Document {
         if !position_in_range(position, self.node_range(arguments)) {
             return None;
         }
-        let name = function.utf8_text(self.text.as_bytes()).ok()?;
-        if !is_identifier(name) {
-            return None;
-        }
+        let (name, _) = self.callable_name_for_function(function)?;
         Some(CallContext {
-            name: name.to_string(),
+            name,
             active_parameter: self.active_argument(arguments, position)?,
         })
+    }
+
+    fn callable_name_for_function(&self, function: Node) -> Option<(String, Range)> {
+        match function.kind() {
+            "identifier" => {
+                let name = function.utf8_text(self.text.as_bytes()).ok()?;
+                is_identifier(name).then(|| (name.to_string(), self.node_range(function)))
+            }
+            "member_expression" => {
+                let property = function.child_by_field_name("property")?;
+                let name = property.utf8_text(self.text.as_bytes()).ok()?;
+                is_identifier(name).then(|| (name.to_string(), self.node_range(property)))
+            }
+            _ => None,
+        }
     }
 
     fn active_argument(&self, arguments: Node, position: Position) -> Option<u32> {
@@ -3538,6 +3541,32 @@ mod tests {
         assert_eq!(help.label, "collect(head, tail)");
         assert_eq!(help.parameters, vec!["head", "tail"]);
         assert_eq!(help.active_parameter, 1);
+    }
+
+    #[test]
+    fn provides_signature_help_for_method_calls() {
+        let mut analyzer = Analyzer::new(Vec::new());
+        analyzer.upsert_document(
+            "file:///example.zzs",
+            "class Box {\n\tmethod scale(value, factor) {\n\t\treturn value;\n\t}\n}\nfunction main() {\n\tlet box := new Box();\n\tbox.scale(2, 3);\n}\n",
+        );
+        let help = analyzer
+            .signature_help("file:///example.zzs", Position::new(7, 15))
+            .expect("method signature help");
+        assert_eq!(help.label, "scale(value, factor)");
+        assert_eq!(help.parameters, vec!["value", "factor"]);
+        assert_eq!(help.active_parameter, 1);
+
+        let hints = analyzer.inlay_hints(
+            "file:///example.zzs",
+            Range::new(Position::new(0, 0), Position::new(8, 0)),
+        );
+        assert!(hints
+            .iter()
+            .any(|hint| hint.label == "value:" && hint.position == Position::new(7, 11)));
+        assert!(hints
+            .iter()
+            .any(|hint| hint.label == "factor:" && hint.position == Position::new(7, 14)));
     }
 
     #[test]
