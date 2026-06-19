@@ -235,6 +235,8 @@ exit 0
         "configured/module",
         lsp_types::CompletionItemKind::MODULE,
     );
+    assert_completion_documentation(&completion, "example/math", "Fixture arithmetic helpers");
+    assert_no_completion_documentation(&completion, "configured/module");
 
     send(
         &mut stdin,
@@ -2282,6 +2284,35 @@ fn assert_completion_kind(completion: &Value, label: &str, kind: lsp_types::Comp
         .find(|item| item["label"].as_str() == Some(label))
         .unwrap_or_else(|| panic!("completion `{label}`"));
     assert_eq!(item["kind"], json!(kind), "completion kind for `{label}`");
+}
+
+fn assert_completion_documentation(completion: &Value, label: &str, expected: &str) {
+    let item = completion_item(completion, label);
+    assert_eq!(item["documentation"]["kind"], "markdown");
+    assert!(
+        item["documentation"]["value"]
+            .as_str()
+            .unwrap()
+            .contains(expected),
+        "completion documentation for `{label}` should contain `{expected}`"
+    );
+}
+
+fn assert_no_completion_documentation(completion: &Value, label: &str) {
+    let item = completion_item(completion, label);
+    assert!(
+        item.get("documentation").is_none(),
+        "completion `{label}` should not have documentation"
+    );
+}
+
+fn completion_item<'a>(completion: &'a Value, label: &str) -> &'a Value {
+    completion["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["label"].as_str() == Some(label))
+        .unwrap_or_else(|| panic!("completion `{label}`"))
 }
 
 fn write_fake_command(path: &std::path::Path, body: &str) {

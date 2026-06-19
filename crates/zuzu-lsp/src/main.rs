@@ -32,7 +32,7 @@ use lsp_types::{
     DocumentDiagnosticReport, DocumentDiagnosticReportResult, DocumentFormattingParams,
     DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentLink,
     DocumentLinkOptions, DocumentLinkParams, DocumentSymbol, DocumentSymbolParams,
-    DocumentSymbolResponse, ExecuteCommandOptions, FoldingRange, FoldingRangeKind,
+    DocumentSymbolResponse, Documentation, ExecuteCommandOptions, FoldingRange, FoldingRangeKind,
     FoldingRangeParams, FullDocumentDiagnosticReport, GotoDefinitionResponse, Hover, HoverContents,
     HoverParams, InitializeParams, InitializeResult, InlayHint, InlayHintKind, InlayHintLabel,
     InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, Location, LogMessageParams,
@@ -937,17 +937,17 @@ impl Server {
             request.extract(Completion::METHOD)?;
         let uri = params.text_document_position.text_document.uri.to_string();
         let position = from_position(params.text_document_position.position);
-        let items: Vec<lsp_types::CompletionItem> = self
-            .analyzer
-            .completions(&uri, position)
-            .into_iter()
-            .map(|item| lsp_types::CompletionItem {
+        let mut items = Vec::new();
+        for item in self.analyzer.completions(&uri, position) {
+            let documentation = self.completion_documentation(&item);
+            items.push(lsp_types::CompletionItem {
                 label: item.label,
                 detail: item.detail,
                 kind: Some(to_completion_item_kind(item.kind)),
+                documentation,
                 ..Default::default()
-            })
-            .collect();
+            });
+        }
         self.send_response(Response::new_ok(id, CompletionResponse::Array(items)))
     }
 
@@ -1547,6 +1547,21 @@ impl Server {
             self.doc_cache.insert(path.to_path_buf(), rendered);
         }
         self.doc_cache.get(path).cloned().flatten()
+    }
+
+    fn completion_documentation(
+        &self,
+        item: &zuzu_analysis::CompletionItem,
+    ) -> Option<Documentation> {
+        if item.kind != zuzu_analysis::CompletionKind::Module {
+            return None;
+        }
+        let path = self.analyzer.workspace().resolve_module_path(&item.label)?;
+        let markdown = self.doc_cache.get(&path).cloned().flatten()?;
+        Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: markdown,
+        }))
     }
 
     fn metadata_document_links(&self, uri: &str) -> Vec<DocumentLink> {
