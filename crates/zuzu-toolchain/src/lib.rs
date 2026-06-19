@@ -452,7 +452,7 @@ fn parse_verbose_module_search_paths(output: &str) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
     for line in output.lines() {
-        if line.trim() == "lib search paths:" {
+        if is_verbose_module_search_heading(line.trim()) {
             in_search_paths = true;
             continue;
         }
@@ -473,6 +473,10 @@ fn parse_verbose_module_search_paths(output: &str) -> Vec<PathBuf> {
     }
 
     paths
+}
+
+fn is_verbose_module_search_heading(line: &str) -> bool {
+    matches!(line, "lib search paths:" | "module search paths:")
 }
 
 fn default_installed_module_dirs() -> Vec<PathBuf> {
@@ -851,6 +855,26 @@ lib search paths:
                 PathBuf::from("/home/example/.zuzu/modules"),
                 PathBuf::from("/var/lib/zuzu/modules"),
                 PathBuf::from("/usr/share/zuzu-rust/modules"),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_runtime_verbose_module_search_paths_heading_variant() {
+        let output = "\
+zuzu-js version 0.6.0
+
+module search paths:
+  /home/example/.zuzu/modules
+  /var/lib/zuzu/modules
+";
+        let info = parse_verbose_runtime_info(output);
+        assert_eq!(info.version, Some("zuzu-js version 0.6.0".to_string()));
+        assert_eq!(
+            info.module_search_paths,
+            vec![
+                PathBuf::from("/home/example/.zuzu/modules"),
+                PathBuf::from("/var/lib/zuzu/modules"),
             ]
         );
     }
