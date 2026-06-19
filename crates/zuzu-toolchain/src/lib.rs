@@ -727,7 +727,7 @@ mod tests {
         let root = unique_temp_dir("zuzu-toolchain-format-crlf-lf");
         fs::create_dir_all(&root).unwrap();
         let script = root.join("zuzu-tidy.pl");
-        write_fake_command(&script, "printf 'say 1;\\nsay 2;\\n'\n");
+        write_fake_command(&script, "cat >/dev/null\nprintf 'say 1;\\nsay 2;\\n'\n");
 
         let toolchain = Toolchain {
             tidy: Some(script),
@@ -745,7 +745,10 @@ mod tests {
         let root = unique_temp_dir("zuzu-toolchain-format-crlf-crlf");
         fs::create_dir_all(&root).unwrap();
         let script = root.join("zuzu-tidy.pl");
-        write_fake_command(&script, "printf 'say 1;\\r\\nsay 2;\\r\\n'\n");
+        write_fake_command(
+            &script,
+            "cat >/dev/null\nprintf 'say 1;\\r\\nsay 2;\\r\\n'\n",
+        );
 
         let toolchain = Toolchain {
             tidy: Some(script),

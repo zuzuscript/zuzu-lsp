@@ -63,6 +63,7 @@ exit 0
     let mut reader = BufReader::new(stdout);
 
     let root = fixture_root();
+    let canonical_root = root.canonicalize().unwrap();
     let extra_root =
         std::env::temp_dir().join(format!("zuzu-lsp-extra-root-{}", std::process::id()));
     let extra_module_dir = extra_root.join("modules").join("extra");
@@ -939,6 +940,14 @@ exit 0
         .as_str()
         .unwrap()
         .contains("tested "));
+    assert!(workspace_test_output["result"]["stdout"]
+        .as_str()
+        .unwrap()
+        .contains(canonical_root.to_string_lossy().as_ref()));
+    assert!(!workspace_test_output["result"]["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("zuzu-distribution.json"));
 
     let module_doc_uri = Url::from_file_path(root.join("modules").join("example").join("math.zzm"))
         .unwrap()
@@ -1011,6 +1020,14 @@ exit 0
         .as_str()
         .unwrap()
         .contains("boxed verify "));
+    assert!(verify_output["result"]["stdout"]
+        .as_str()
+        .unwrap()
+        .contains(canonical_root.to_string_lossy().as_ref()));
+    assert!(!verify_output["result"]["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("zuzu-distribution.json"));
 
     send(
         &mut stdin,

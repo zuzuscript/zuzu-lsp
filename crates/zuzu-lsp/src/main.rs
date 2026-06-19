@@ -1290,7 +1290,7 @@ impl Server {
                 if !self.workspace_trusted {
                     return self.send_untrusted_workspace_error(id, "zuzu.testWorkspace");
                 }
-                let path = command_path_arg(&params.arguments)
+                let path = distribution_command_path_arg(&params.arguments)
                     .or_else(|| self.analyzer.workspace().roots().first().cloned())
                     .unwrap_or_else(|| PathBuf::from("."));
                 self.respond_tool_output(id, self.toolchain.run_workspace_tests(&path))
@@ -1312,7 +1312,7 @@ impl Server {
                 if !self.workspace_trusted {
                     return self.send_untrusted_workspace_error(id, "zuzu.verifyPackage");
                 }
-                let path = command_path_arg(&params.arguments)
+                let path = distribution_command_path_arg(&params.arguments)
                     .or_else(|| self.analyzer.workspace().roots().first().cloned())
                     .unwrap_or_else(|| PathBuf::from("."));
                 self.respond_tool_output(id, self.toolchain.verify_distribution(&path))
@@ -2253,6 +2253,14 @@ fn command_path_arg(arguments: &[serde_json::Value]) -> Option<PathBuf> {
     } else {
         Some(PathBuf::from(value))
     }
+}
+
+fn distribution_command_path_arg(arguments: &[serde_json::Value]) -> Option<PathBuf> {
+    let path = command_path_arg(arguments)?;
+    if path.file_name().and_then(|name| name.to_str()) == Some("zuzu-distribution.json") {
+        return path.parent().map(Path::to_path_buf).or(Some(path));
+    }
+    Some(path)
 }
 
 fn command_uri_arg(arguments: &[serde_json::Value]) -> Option<String> {
