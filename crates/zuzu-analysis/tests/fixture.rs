@@ -81,3 +81,35 @@ fn resolves_fixture_modules_and_provides_symbols() {
     assert_eq!(edit.edit.range.start, Position::new(0, 0));
     assert_eq!(edit.edit.new_text, "from example/math import Calculator;\n");
 }
+
+#[test]
+fn resolves_runtime_module_roots_and_optional_imports() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("fixtures")
+        .join("workspaces")
+        .join("basic");
+    let runtime_modules = root.join("runtime-modules");
+    let mut analyzer = Analyzer::with_module_roots(vec![root], vec![runtime_modules]);
+    assert!(analyzer
+        .workspace()
+        .known_modules()
+        .any(|module| module == "std/demo"));
+
+    let diagnostics = analyzer.upsert_document(
+        "file:///stdlib-and-optional.zzs",
+        "from std/demo import StdThing;\nfrom missing/optional try import OptionalThing;\n\nfunction __main__() {\n\tlet thing := StdThing;\n\tlet optional := OptionalThing;\n}\n".to_string(),
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "unresolved-import"
+                && diagnostic.code != "suspicious-try-import"),
+        "unexpected import diagnostics: {diagnostics:#?}"
+    );
+
+    let links = analyzer.document_links("file:///stdlib-and-optional.zzs");
+    assert_eq!(links.len(), 1);
+    assert!(links[0].target.ends_with("/runtime-modules/std/demo.zzm"));
+}

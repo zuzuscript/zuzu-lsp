@@ -1,0 +1,12 @@
+=head1 NAME
+
+std/demo - Fixture runtime module.
+
+=head1 DESCRIPTION
+
+This file stands in for an implementation-provided stdlib module during
+language-server fixture tests.
+
+=cut
+
+class StdThing;
