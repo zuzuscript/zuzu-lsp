@@ -502,7 +502,11 @@ impl Server {
             roots.clone(),
             configured_module_roots(&settings, &toolchain),
         );
-        let doc_cache = workspace_documentation_index(&analyzer, &toolchain);
+        let doc_cache = if workspace_trusted {
+            workspace_documentation_index(&analyzer, &toolchain)
+        } else {
+            HashMap::new()
+        };
         Self {
             analyzer,
             toolchain,
@@ -715,7 +719,11 @@ impl Server {
             roots,
             configured_module_roots(&self.settings, &self.toolchain),
         );
-        self.doc_cache = workspace_documentation_index(&self.analyzer, &self.toolchain);
+        self.doc_cache = if self.workspace_trusted {
+            workspace_documentation_index(&self.analyzer, &self.toolchain)
+        } else {
+            HashMap::new()
+        };
 
         let open_documents: Vec<(String, String, Option<i32>, bool, bool)> = self
             .text_documents
@@ -1528,6 +1536,9 @@ impl Server {
     }
 
     fn documentation_markdown(&mut self, path: &Path) -> Option<String> {
+        if !self.workspace_trusted {
+            return None;
+        }
         if !self.doc_cache.contains_key(path) {
             let rendered = self.toolchain.render_pod_markdown(path).ok().flatten();
             self.doc_cache.insert(path.to_path_buf(), rendered);

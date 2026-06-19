@@ -1553,8 +1553,25 @@ exit 0
 
 #[test]
 fn refuses_tool_execution_in_untrusted_workspace() {
+    let tool_root = std::env::temp_dir().join(format!(
+        "zuzu-lsp-untrusted-tool-root-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&tool_root).unwrap();
+    let pod_parse_marker = tool_root.join("pod-parse-ran");
+    write_fake_command(
+        &tool_root.join("pod_parse"),
+        &format!(
+            "printf ran > '{}'\nprintf 'untrusted docs\\n'\n",
+            pod_parse_marker.display()
+        ),
+    );
+    write_fake_command(&tool_root.join("zuzu-tidy.pl"), "cat\n");
+    let test_path = std::env::join_paths([tool_root.clone()]).unwrap();
+
     let mut child = Command::new(env!("CARGO_BIN_EXE_zuzu-lsp"))
         .arg("--stdio")
+        .env("PATH", test_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1616,6 +1633,7 @@ fn refuses_tool_execution_in_untrusted_workspace() {
     );
     let diagnostics = read_method(&mut reader, "textDocument/publishDiagnostics");
     assert_eq!(diagnostics["params"]["diagnostics"], json!([]));
+    assert!(!pod_parse_marker.exists());
 
     send(
         &mut stdin,
@@ -1655,6 +1673,26 @@ fn refuses_tool_execution_in_untrusted_workspace() {
         .as_str()
         .unwrap()
         .contains("untrusted"));
+    assert!(!pod_parse_marker.exists());
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "textDocument/hover",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": { "line": 0, "character": 8 }
+            }
+        }),
+    );
+    let hover = read_response(&mut reader, 5);
+    assert!(hover["result"]["contents"]
+        .as_str()
+        .unwrap()
+        .contains("ZuzuScript import"));
+    assert!(!pod_parse_marker.exists());
 
     send(
         &mut stdin,
@@ -1673,8 +1711,10 @@ fn refuses_tool_execution_in_untrusted_workspace() {
         .as_str()
         .unwrap()
         .contains("untrusted"));
+    assert!(!pod_parse_marker.exists());
 
     shutdown(&mut child, stdin, &mut reader);
+    let _ = std::fs::remove_dir_all(tool_root);
 }
 
 #[test]
