@@ -3729,6 +3729,45 @@ mod tests {
     }
 
     #[test]
+    fn builds_call_hierarchy_for_method_calls() {
+        let mut analyzer = Analyzer::new(Vec::new());
+        analyzer.upsert_document(
+            "file:///example.zzs",
+            concat!(
+                "class Counter {\n",
+                "\tmethod bump() {\n",
+                "\t\treturn self;\n",
+                "\t}\n",
+                "}\n",
+                "function main() {\n",
+                "\tlet counter := new Counter();\n",
+                "\tcounter.bump();\n",
+                "}\n",
+            ),
+        );
+
+        let main = analyzer.prepare_call_hierarchy("file:///example.zzs", Position::new(5, 10));
+        assert_eq!(main.len(), 1);
+        assert_eq!(main[0].name, "main");
+
+        let outgoing = analyzer.outgoing_calls(&main[0]);
+        assert_eq!(outgoing.len(), 1);
+        assert_eq!(outgoing[0].to.name, "bump");
+        assert_eq!(
+            outgoing[0].from_ranges,
+            vec![Range::new(Position::new(7, 9), Position::new(7, 13))]
+        );
+
+        let bump = analyzer
+            .prepare_call_hierarchy("file:///example.zzs", Position::new(1, 9))
+            .pop()
+            .expect("bump hierarchy item");
+        let incoming = analyzer.incoming_calls(&bump);
+        assert_eq!(incoming.len(), 1);
+        assert_eq!(incoming[0].from.name, "main");
+    }
+
+    #[test]
     fn builds_type_hierarchy_for_classes_and_traits() {
         let mut analyzer = Analyzer::new(Vec::new());
         analyzer.upsert_document(
