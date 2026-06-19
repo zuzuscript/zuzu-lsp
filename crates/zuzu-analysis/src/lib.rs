@@ -1726,7 +1726,10 @@ impl Document {
                 self.collect_named_symbol(node, SymbolKind::Trait, "trait");
                 self.collect_type_relations(node);
             }
-            "field_declaration" => self.collect_named_symbol(node, SymbolKind::Field, "field"),
+            "field_declaration" => {
+                self.collect_named_symbol(node, SymbolKind::Field, "field");
+                self.collect_field_accessor_signatures(node);
+            }
             "variable_declaration" => {
                 self.collect_named_symbol(node, SymbolKind::Variable, "variable")
             }
@@ -1932,6 +1935,48 @@ impl Document {
             label: format!("{}({})", name, parameter_names.join(", ")),
             parameters: parameter_names,
         });
+    }
+
+    fn collect_field_accessor_signatures(&mut self, node: Node) {
+        let Some(field) = node.child_by_field_name("name") else {
+            return;
+        };
+        let Ok(field) = field.utf8_text(self.text.as_bytes()) else {
+            return;
+        };
+        let field = field.to_string();
+
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "field_accessor_list" {
+                    self.collect_field_accessor_signatures_from_list(&field, child);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn collect_field_accessor_signatures_from_list(&mut self, field: &str, list: Node) {
+        let Ok(text) = list.utf8_text(self.text.as_bytes()) else {
+            return;
+        };
+        for accessor in text.split(|character: char| !character.is_ascii_alphanumeric()) {
+            let parameters = match accessor {
+                "get" | "clear" | "has" => Vec::new(),
+                "set" => vec!["value".to_string()],
+                _ => continue,
+            };
+            let name = format!("{accessor}_{field}");
+            self.signatures.push(CallableSignature {
+                label: format!("{}({})", name, parameters.join(", ")),
+                name,
+                parameters,
+            });
+        }
     }
 
     fn collect_top_level_duplicate_diagnostics(&mut self) {
@@ -3567,6 +3612,34 @@ mod tests {
         assert!(hints
             .iter()
             .any(|hint| hint.label == "factor:" && hint.position == Position::new(7, 14)));
+    }
+
+    #[test]
+    fn provides_signature_help_for_field_accessors() {
+        let mut analyzer = Analyzer::new(Vec::new());
+        analyzer.upsert_document(
+            "file:///example.zzs",
+            "class Person {\n\tlet String name with get, set, clear, has := \"Anon\";\n}\nfunction main() {\n\tlet person := new Person();\n\tperson.set_name(\"Zia\");\n\tperson.clear_name();\n}\n",
+        );
+        let setter = analyzer
+            .signature_help("file:///example.zzs", Position::new(5, 20))
+            .expect("set accessor signature help");
+        assert_eq!(setter.label, "set_name(value)");
+        assert_eq!(setter.parameters, vec!["value"]);
+
+        let clearer = analyzer
+            .signature_help("file:///example.zzs", Position::new(6, 19))
+            .expect("clear accessor signature help");
+        assert_eq!(clearer.label, "clear_name()");
+        assert!(clearer.parameters.is_empty());
+
+        let hints = analyzer.inlay_hints(
+            "file:///example.zzs",
+            Range::new(Position::new(0, 0), Position::new(8, 0)),
+        );
+        assert!(hints
+            .iter()
+            .any(|hint| hint.label == "value:" && hint.position == Position::new(5, 17)));
     }
 
     #[test]
