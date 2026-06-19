@@ -1915,6 +1915,11 @@ impl Document {
                             parameter_names.push(name.to_string());
                         }
                     }
+                    if let Some(name) = parameter.child_by_field_name("variadic_name") {
+                        if let Ok(name) = name.utf8_text(self.text.as_bytes()) {
+                            parameter_names.push(name.to_string());
+                        }
+                    }
                 }
                 if !cursor.goto_next_sibling() {
                     break;
@@ -3517,6 +3522,21 @@ mod tests {
             .expect("signature help");
         assert_eq!(help.label, "add(a, b)");
         assert_eq!(help.parameters, vec!["a", "b"]);
+        assert_eq!(help.active_parameter, 1);
+    }
+
+    #[test]
+    fn includes_variadic_collectors_in_signature_help() {
+        let mut analyzer = Analyzer::new(Vec::new());
+        analyzer.upsert_document(
+            "file:///example.zzs",
+            "function collect(head ... tail) {\n\treturn tail;\n}\nfunction main() {\n\tcollect(1, 2, 3);\n}\n",
+        );
+        let help = analyzer
+            .signature_help("file:///example.zzs", Position::new(4, 14))
+            .expect("signature help");
+        assert_eq!(help.label, "collect(head, tail)");
+        assert_eq!(help.parameters, vec!["head", "tail"]);
         assert_eq!(help.active_parameter, 1);
     }
 
