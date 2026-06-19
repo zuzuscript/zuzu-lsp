@@ -1207,6 +1207,9 @@ impl Workspace {
         if self.module_path_is_local_to_distribution(distribution, &resolved_path) {
             return None;
         }
+        if is_stdlib_module(&import.module) {
+            return None;
+        }
         if distribution
             .dependencies
             .iter()
@@ -1552,6 +1555,13 @@ fn dependency_covers_module(dependency: &str, module: &str) -> bool {
         || module
             .strip_prefix(dependency)
             .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn is_stdlib_module(module: &str) -> bool {
+    module == "javascript"
+        || module == "perl"
+        || module.strip_prefix("std/").is_some()
+        || module.strip_prefix("test/").is_some()
 }
 
 fn parse_workspace_document(workspace: &Workspace, uri: String, text: String) -> Document {
@@ -3783,20 +3793,29 @@ mod tests {
         let external = unique_temp_dir("zuzu-analysis-external-modules");
         fs::create_dir_all(root.join("scripts")).unwrap();
         fs::create_dir_all(external.join("dep")).unwrap();
+        fs::create_dir_all(external.join("std")).unwrap();
         fs::write(
             root.join("zuzu-distribution.json"),
             "{\n\t\"name\": \"missing-dependency-fixture\",\n\t\"version\": \"0.0.1\",\n\t\"author\": \"Example Author\",\n\t\"license\": \"MIT\",\n\t\"abstract\": \"Missing dependency fixture.\"\n}\n",
         )
         .unwrap();
         fs::write(external.join("dep").join("stuff.zzm"), "class Thing;\n").unwrap();
+        fs::write(external.join("std").join("demo.zzm"), "class StdThing;\n").unwrap();
         let script = root.join("scripts").join("app.zzs");
-        fs::write(&script, "from dep/stuff import Thing;\nsay Thing;\n").unwrap();
+        fs::write(
+            &script,
+            "from dep/stuff import Thing;\nfrom std/demo import StdThing;\nsay Thing;\nsay StdThing;\n",
+        )
+        .unwrap();
         let uri = path_to_uri(&script).unwrap();
 
         let analyzer = Analyzer::with_module_roots(vec![root.clone()], vec![external.clone()]);
         let diagnostics = analyzer.diagnostics(&uri);
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.source == "zuzu-package" && diagnostic.code == "missing-dependency"
+        }));
+        assert!(!diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "missing-dependency" && diagnostic.message.contains("std/demo")
         }));
         let fixes =
             analyzer.import_fixes(&uri, Range::new(Position::new(0, 5), Position::new(0, 5)));
@@ -3826,9 +3845,11 @@ mod tests {
         let _ = fs::remove_file(&script);
         let _ = fs::remove_file(root.join("zuzu-distribution.json"));
         let _ = fs::remove_file(external.join("dep").join("stuff.zzm"));
+        let _ = fs::remove_file(external.join("std").join("demo.zzm"));
         let _ = fs::remove_dir(root.join("scripts"));
         let _ = fs::remove_dir(root);
         let _ = fs::remove_dir(external.join("dep"));
+        let _ = fs::remove_dir(external.join("std"));
         let _ = fs::remove_dir(external);
     }
 
