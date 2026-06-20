@@ -366,6 +366,13 @@ fn request_id_from_number_or_string(id: NumberOrString) -> RequestId {
     }
 }
 
+fn progress_percentage(done: usize, total: usize) -> u32 {
+    if total == 0 {
+        return 100;
+    }
+    ((done.saturating_mul(100)) / total).min(100) as u32
+}
+
 fn configured_module_roots(settings: &ServerSettings, toolchain: &Toolchain) -> Vec<PathBuf> {
     let mut roots = settings.module_roots.clone();
     roots.extend(toolchain.module_search_paths.clone());
@@ -1415,8 +1422,8 @@ impl Server {
                 if !self.workspace_trusted {
                     return self.send_untrusted_workspace_error(id, "zuzu.indexDocs");
                 }
-                let result = self.index_documentation();
-                self.send_response(Response::new_ok(id, result))
+                let progress_token = params.work_done_progress_params.work_done_token;
+                self.index_documentation(id, progress_token)
             }
             "zuzu.replInstructions" => self.send_response(Response::new_ok(
                 id,
@@ -1610,7 +1617,27 @@ impl Server {
         self.doc_cache.get(path).cloned().flatten()
     }
 
-    fn index_documentation(&mut self) -> serde_json::Value {
+    fn index_documentation(
+        &mut self,
+        id: RequestId,
+        progress_token: Option<ProgressToken>,
+    ) -> Result<()> {
+        if let Some(token) = &progress_token {
+            self.send_work_done_progress(
+                token.clone(),
+                WorkDoneProgress::Begin(WorkDoneProgressBegin {
+                    title: "ZuzuScript documentation index".to_string(),
+                    cancellable: Some(true),
+                    message: Some("Indexing module documentation".to_string()),
+                    percentage: Some(0),
+                }),
+            )?;
+        }
+        self.drain_cancellation_notifications()?;
+        if self.consume_cancelled_request(&id) {
+            return self.cancel_documentation_index(id, progress_token);
+        }
+
         let paths: Vec<PathBuf> = self
             .analyzer
             .workspace()
@@ -1618,19 +1645,78 @@ impl Server {
             .filter_map(|module| self.analyzer.workspace().resolve_module_path(module))
             .collect();
         let mut documented = 0usize;
-        for path in &paths {
+        let indexed = paths.len();
+        for (index, path) in paths.iter().enumerate() {
+            self.drain_cancellation_notifications()?;
+            if self.consume_cancelled_request(&id) {
+                return self.cancel_documentation_index(id, progress_token);
+            }
             if self.documentation_markdown(path).is_some() {
                 documented += 1;
             }
+            self.report_documentation_index_progress(
+                &progress_token,
+                Some(format!("Indexed {}", path.display())),
+                progress_percentage(index + 1, indexed),
+            )?;
         }
-        let indexed = paths.len();
         let _ = self.send_log_message(format!(
             "Indexed documentation for {documented} of {indexed} Zuzu modules"
         ));
-        json!({
-            "indexed": indexed,
-            "documented": documented,
-        })
+        if let Some(token) = progress_token {
+            self.send_work_done_progress(
+                token,
+                WorkDoneProgress::End(WorkDoneProgressEnd {
+                    message: Some("Documentation index ready".to_string()),
+                }),
+            )?;
+        }
+        self.send_response(Response::new_ok(
+            id,
+            json!({
+                "indexed": indexed,
+                "documented": documented,
+            }),
+        ))
+    }
+
+    fn report_documentation_index_progress(
+        &self,
+        progress_token: &Option<ProgressToken>,
+        message: Option<String>,
+        percentage: u32,
+    ) -> Result<()> {
+        let Some(token) = progress_token else {
+            return Ok(());
+        };
+        self.send_work_done_progress(
+            token.clone(),
+            WorkDoneProgress::Report(WorkDoneProgressReport {
+                cancellable: Some(true),
+                message,
+                percentage: Some(percentage),
+            }),
+        )
+    }
+
+    fn cancel_documentation_index(
+        &self,
+        id: RequestId,
+        progress_token: Option<ProgressToken>,
+    ) -> Result<()> {
+        if let Some(token) = progress_token {
+            self.send_work_done_progress(
+                token,
+                WorkDoneProgress::End(WorkDoneProgressEnd {
+                    message: Some("Documentation index cancelled".to_string()),
+                }),
+            )?;
+        }
+        self.send_response(Response::new_err(
+            id,
+            ErrorCode::RequestCanceled as i32,
+            "Documentation index cancelled".to_string(),
+        ))
     }
 
     fn completion_documentation(

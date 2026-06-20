@@ -2438,6 +2438,57 @@ fn cancels_workspace_diagnostics() {
         "Workspace diagnostics cancelled"
     );
 
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": {
+                "id": 3
+            }
+        }),
+    );
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "workspace/executeCommand",
+            "params": {
+                "command": "zuzu.indexDocs",
+                "arguments": [],
+                "workDoneToken": "cancelled-documentation-index"
+            }
+        }),
+    );
+
+    let index_progress_begin = read_method(&mut reader, "$/progress");
+    assert_eq!(
+        index_progress_begin["params"]["token"],
+        "cancelled-documentation-index"
+    );
+    assert_eq!(index_progress_begin["params"]["value"]["kind"], "begin");
+    assert_eq!(index_progress_begin["params"]["value"]["cancellable"], true);
+    assert_eq!(index_progress_begin["params"]["value"]["percentage"], 0);
+
+    let index_progress_end = read_method(&mut reader, "$/progress");
+    assert_eq!(
+        index_progress_end["params"]["token"],
+        "cancelled-documentation-index"
+    );
+    assert_eq!(index_progress_end["params"]["value"]["kind"], "end");
+    assert_eq!(
+        index_progress_end["params"]["value"]["message"],
+        "Documentation index cancelled"
+    );
+
+    let index_response = read_response(&mut reader, 3);
+    assert_eq!(index_response["error"]["code"], -32800);
+    assert_eq!(
+        index_response["error"]["message"],
+        "Documentation index cancelled"
+    );
+
     shutdown(&mut child, stdin, &mut reader);
 }
 
