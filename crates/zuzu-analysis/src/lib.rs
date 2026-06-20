@@ -1184,11 +1184,10 @@ impl Workspace {
             }
         }
 
-        if let Some(paths) = env::var_os("ZUZULIB") {
-            module_roots.extend(env::split_paths(&paths));
-        }
-
         if runtime_module_roots.is_empty() {
+            if let Some(paths) = env::var_os("ZUZULIB") {
+                module_roots.extend(env::split_paths(&paths));
+            }
             module_roots.extend(fallback_runtime_module_roots());
         } else {
             module_roots.extend(runtime_module_roots);
@@ -3826,6 +3825,25 @@ mod tests {
     }
 
     #[test]
+    fn treats_explicit_runtime_module_roots_as_authoritative() {
+        let runtime_root = unique_temp_dir("zuzu-analysis-runtime-root");
+        let env_root = unique_temp_dir("zuzu-analysis-env-root");
+        fs::create_dir_all(&runtime_root).unwrap();
+        fs::create_dir_all(&env_root).unwrap();
+
+        let previous_zuzulib = env::var_os("ZUZULIB");
+        env::set_var("ZUZULIB", &env_root);
+        let analyzer = Analyzer::with_module_roots(Vec::new(), vec![runtime_root.clone()]);
+        restore_env_var("ZUZULIB", previous_zuzulib);
+
+        assert!(analyzer.workspace().module_roots().contains(&runtime_root));
+        assert!(!analyzer.workspace().module_roots().contains(&env_root));
+
+        let _ = fs::remove_dir(runtime_root);
+        let _ = fs::remove_dir(env_root);
+    }
+
+    #[test]
     fn resolves_script_modules_with_zzs_extension() {
         let root = unique_temp_dir("zuzu-analysis-zzs-module");
         let module_dir = root.join("modules").join("app");
@@ -4827,5 +4845,13 @@ mod tests {
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         std::env::temp_dir().join(format!("{}-{}", prefix, std::process::id()))
+    }
+
+    fn restore_env_var(key: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            env::set_var(key, value);
+        } else {
+            env::remove_var(key);
+        }
     }
 }
