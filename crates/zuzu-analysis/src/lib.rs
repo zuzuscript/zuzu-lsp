@@ -1185,7 +1185,6 @@ impl Workspace {
         } else {
             module_roots.extend(runtime_module_roots);
         }
-        module_roots.retain(|path| path.is_dir());
         dedup_paths(&mut module_roots);
 
         let (distributions, metadata_diagnostics) = collect_distributions(&roots);
@@ -3731,6 +3730,23 @@ mod tests {
         let _ = fs::remove_dir(root.join("scripts"));
         let _ = fs::remove_dir(root.join("modules"));
         let _ = fs::remove_dir(root);
+    }
+
+    #[test]
+    fn reports_configured_missing_module_roots_in_resolution_diagnostics() {
+        let missing_root = env::temp_dir().join("zuzu-analysis-configured-missing-module-root");
+        let _ = fs::remove_dir_all(&missing_root);
+
+        let mut analyzer = Analyzer::with_module_roots(Vec::new(), vec![missing_root.clone()]);
+        let diagnostics =
+            analyzer.upsert_document("file:///example.zzs", "from missing/module import Thing;\n");
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.source == "zuzu-module")
+            .expect("unresolved import diagnostic");
+
+        assert!(diagnostic.message.contains("Searched module roots"));
+        assert!(diagnostic.message.contains(&path_display(&missing_root)));
     }
 
     #[test]
