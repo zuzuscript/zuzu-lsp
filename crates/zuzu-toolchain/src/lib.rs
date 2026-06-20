@@ -167,13 +167,7 @@ impl Toolchain {
             return Ok(None);
         }
 
-        let rendered = if let Some(pod_parse) = &self.pod_parse {
-            run_documentation_command(pod_parse, &["-f", "markdown"], path, None)?
-        } else if let Some(zuzudoc) = &self.zuzudoc {
-            run_documentation_command(zuzudoc, &[], path, Some(("PAGER", "cat")))?
-        } else {
-            return Err(ToolchainError::MissingDocumentationRenderer);
-        };
+        let rendered = self.render_pod_markdown_text(path)?;
 
         let rendered = rendered.trim().to_string();
         Ok((!rendered.is_empty()).then_some(rendered))
@@ -181,16 +175,22 @@ impl Toolchain {
 
     pub fn render_docs(&self, path: &Path) -> Result<ToolOutput, ToolchainError> {
         if let Some(pod_parse) = &self.pod_parse {
-            self.run_tool_with_env(
+            let output = self.run_tool_with_env(
                 pod_parse,
                 &["-f".into(), "markdown".into(), path.into()],
                 None,
-            )
-        } else if let Some(zuzudoc) = &self.zuzudoc {
-            self.run_tool_with_env(zuzudoc, &[path.into()], Some(("PAGER", "cat")))
-        } else {
-            Err(ToolchainError::MissingDocumentationRenderer)
+            );
+            match output {
+                Ok(output) if output.success || self.zuzudoc.is_none() => return Ok(output),
+                Ok(_) | Err(_) => {}
+            }
         }
+
+        if let Some(zuzudoc) = &self.zuzudoc {
+            return self.run_tool_with_env(zuzudoc, &[path.into()], Some(("PAGER", "cat")));
+        }
+
+        Err(ToolchainError::MissingDocumentationRenderer)
     }
 
     pub fn run_test_file(&self, path: &Path) -> Result<ToolOutput, ToolchainError> {
@@ -239,6 +239,22 @@ impl Toolchain {
 
     fn run_tool(&self, command: &Path, args: &[OsString]) -> Result<ToolOutput, ToolchainError> {
         self.run_tool_with_env(command, args, None)
+    }
+
+    fn render_pod_markdown_text(&self, path: &Path) -> Result<String, ToolchainError> {
+        if let Some(pod_parse) = &self.pod_parse {
+            match run_documentation_command(pod_parse, &["-f", "markdown"], path, None) {
+                Ok(rendered) => return Ok(rendered),
+                Err(error) if self.zuzudoc.is_none() => return Err(error),
+                Err(_) => {}
+            }
+        }
+
+        if let Some(zuzudoc) = &self.zuzudoc {
+            return run_documentation_command(zuzudoc, &[], path, Some(("PAGER", "cat")));
+        }
+
+        Err(ToolchainError::MissingDocumentationRenderer)
     }
 
     fn run_tool_with_env(
@@ -835,6 +851,45 @@ mod tests {
         assert_eq!(rendered, "pager=cat\n");
 
         std::env::remove_var("ZUZU_LSP_SECRET");
+        let _ = fs::remove_file(root.join("zuzudoc.pl"));
+        let _ = fs::remove_file(module);
+        let _ = fs::remove_dir(root);
+    }
+
+    #[test]
+    fn documentation_rendering_falls_back_to_zuzudoc() {
+        let root = unique_temp_dir("zuzu-toolchain-doc-fallback");
+        fs::create_dir_all(&root).unwrap();
+        let pod_parse = root.join("pod_parse");
+        let zuzudoc = root.join("zuzudoc.pl");
+        write_fake_command(&pod_parse, "printf 'pod_parse failed\\n' >&2\nexit 7\n");
+        write_fake_command(&zuzudoc, "printf 'fallback docs for %s\\n' \"$1\"\n");
+        let module = root.join("mod.zzm");
+        fs::write(&module, "=pod\n\n=head1 NAME\n\nmod\n").unwrap();
+
+        let toolchain = Toolchain {
+            pod_parse: Some(pod_parse),
+            zuzudoc: Some(zuzudoc),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            toolchain.render_pod_markdown(&module).unwrap(),
+            Some(format!("fallback docs for {}", module.display()))
+        );
+
+        let output = toolchain.render_docs(&module).unwrap();
+        assert!(output.success);
+        assert_eq!(
+            output.stdout,
+            format!("fallback docs for {}\n", module.display())
+        );
+        assert!(output
+            .command
+            .first()
+            .is_some_and(|command| command.ends_with("zuzudoc.pl")));
+
+        let _ = fs::remove_file(root.join("pod_parse"));
         let _ = fs::remove_file(root.join("zuzudoc.pl"));
         let _ = fs::remove_file(module);
         let _ = fs::remove_dir(root);
