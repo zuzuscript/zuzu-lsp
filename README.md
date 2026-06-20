@@ -22,8 +22,8 @@ help. Formatting delegates to `zuzu-tidy.pl` when it can be found.
 
 Toolchain commands are explicit user actions. The server wraps `zuzuprove`,
 `pod_parse` with `zuzudoc.pl` fallback, `zuzubox verify`, package reporting,
-dependency graph reporting, and REPL launch instructions without running project
-code during normal editing.
+dependency graph reporting, documentation cache warming, and REPL launch
+instructions without running project code during normal editing.
 When the workspace is trusted and a `zuzu` binary is available, normal editing
 may run parse-only `zuzu --lint -e` checks to surface exact runtime parser
 errors and semantic warnings; these diagnostics supplement the Tree-sitter

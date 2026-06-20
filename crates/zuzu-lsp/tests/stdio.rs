@@ -168,6 +168,7 @@ exit 0
     assert!(commands.contains(&"zuzu.verifyPackage"));
     assert!(commands.contains(&"zuzu.packageReport"));
     assert!(commands.contains(&"zuzu.dependencyGraph"));
+    assert!(commands.contains(&"zuzu.indexDocs"));
     assert!(commands.contains(&"zuzu.replInstructions"));
 
     send(
@@ -254,6 +255,49 @@ exit 0
         &mut stdin,
         json!({
             "jsonrpc": "2.0",
+            "id": 49,
+            "method": "workspace/executeCommand",
+            "params": {
+                "command": "zuzu.indexDocs",
+                "arguments": []
+            }
+        }),
+    );
+    let docs_index_log = read_method(&mut reader, "window/logMessage");
+    assert!(docs_index_log["params"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Indexed documentation"));
+    let docs_index = read_response(&mut reader, 49);
+    assert!(docs_index["result"]["indexed"].as_u64().unwrap() >= 2);
+    assert!(docs_index["result"]["documented"].as_u64().unwrap() >= 1);
+    assert!(pod_parse_marker.exists());
+    std::fs::remove_file(&pod_parse_marker).unwrap();
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 50,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": { "line": 0, "character": 11 }
+            }
+        }),
+    );
+    let cached_docs_completion = read_response(&mut reader, 50);
+    assert_completion_documentation(
+        &cached_docs_completion,
+        "example/math",
+        "Fixture arithmetic helpers",
+    );
+    assert!(!pod_parse_marker.exists());
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
             "id": 47,
             "method": "completionItem/resolve",
             "params": completion_item(&completion, "example/math")
@@ -268,8 +312,7 @@ exit 0
         .as_str()
         .unwrap()
         .contains("Fixture arithmetic helpers"));
-    assert!(pod_parse_marker.exists());
-    std::fs::remove_file(&pod_parse_marker).unwrap();
+    assert!(!pod_parse_marker.exists());
 
     send(
         &mut stdin,
@@ -1963,6 +2006,7 @@ fn refuses_tool_execution_in_untrusted_workspace() {
                 .unwrap()
                 .to_string()]),
         ),
+        (10, "zuzu.indexDocs", json!([])),
     ] {
         send(
             &mut stdin,

@@ -307,6 +307,7 @@ fn capabilities() -> ServerCapabilities {
                 "zuzu.verifyPackage".to_string(),
                 "zuzu.packageReport".to_string(),
                 "zuzu.dependencyGraph".to_string(),
+                "zuzu.indexDocs".to_string(),
                 "zuzu.replInstructions".to_string(),
             ],
             work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -1410,6 +1411,13 @@ impl Server {
             "zuzu.dependencyGraph" => {
                 self.send_response(Response::new_ok(id, self.analyzer.dependency_graph()))
             }
+            "zuzu.indexDocs" => {
+                if !self.workspace_trusted {
+                    return self.send_untrusted_workspace_error(id, "zuzu.indexDocs");
+                }
+                let result = self.index_documentation();
+                self.send_response(Response::new_ok(id, result))
+            }
             "zuzu.replInstructions" => self.send_response(Response::new_ok(
                 id,
                 repl_instructions_value(&self.toolchain),
@@ -1600,6 +1608,29 @@ impl Server {
             self.doc_cache.insert(path.to_path_buf(), rendered);
         }
         self.doc_cache.get(path).cloned().flatten()
+    }
+
+    fn index_documentation(&mut self) -> serde_json::Value {
+        let paths: Vec<PathBuf> = self
+            .analyzer
+            .workspace()
+            .known_modules()
+            .filter_map(|module| self.analyzer.workspace().resolve_module_path(module))
+            .collect();
+        let mut documented = 0usize;
+        for path in &paths {
+            if self.documentation_markdown(path).is_some() {
+                documented += 1;
+            }
+        }
+        let indexed = paths.len();
+        let _ = self.send_log_message(format!(
+            "Indexed documentation for {documented} of {indexed} Zuzu modules"
+        ));
+        json!({
+            "indexed": indexed,
+            "documented": documented,
+        })
     }
 
     fn completion_documentation(
