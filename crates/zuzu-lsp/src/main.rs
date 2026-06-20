@@ -596,6 +596,7 @@ impl Server {
             DidOpenTextDocument::METHOD => {
                 let params: DidOpenTextDocumentParams = serde_json::from_value(params)?;
                 let uri = params.text_document.uri.to_string();
+                self.invalidate_documentation_cache(&uri);
                 let version = Some(params.text_document.version);
                 let document = DocumentSnapshot::new(
                     uri.clone(),
@@ -620,6 +621,7 @@ impl Server {
             DidChangeTextDocument::METHOD => {
                 let params: DidChangeTextDocumentParams = serde_json::from_value(params)?;
                 let uri = params.text_document.uri.to_string();
+                self.invalidate_documentation_cache(&uri);
                 let Some(document) = self.text_documents.get_mut(&uri) else {
                     return Ok(());
                 };
@@ -644,6 +646,7 @@ impl Server {
             DidCloseTextDocument::METHOD => {
                 let params: DidCloseTextDocumentParams = serde_json::from_value(params)?;
                 let uri = params.text_document.uri.to_string();
+                self.invalidate_documentation_cache(&uri);
                 let version = self.document_version(&uri);
                 self.text_documents.remove(&uri);
                 self.analyzer.remove_document(&uri);
@@ -689,6 +692,16 @@ impl Server {
 
     fn consume_cancelled_request(&mut self, id: &RequestId) -> bool {
         self.cancelled_requests.remove(id)
+    }
+
+    fn invalidate_documentation_cache(&mut self, uri: &str) {
+        let Some(path) = uri_to_path(uri) else {
+            return;
+        };
+        self.doc_cache.remove(&path);
+        if let Ok(canonical) = path.canonicalize() {
+            self.doc_cache.remove(&canonical);
+        }
     }
 
     fn change_workspace_folders(&mut self, params: DidChangeWorkspaceFoldersParams) -> Result<()> {

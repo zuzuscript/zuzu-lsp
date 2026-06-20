@@ -86,6 +86,9 @@ exit 0
     let script_path = root.join("scripts").join("demo.zzs");
     let uri = Url::from_file_path(&script_path).unwrap().to_string();
     let source = std::fs::read_to_string(&script_path).unwrap();
+    let module_doc_path = root.join("modules").join("example").join("math.zzm");
+    let module_doc_uri = Url::from_file_path(&module_doc_path).unwrap().to_string();
+    let module_doc_source = std::fs::read_to_string(&module_doc_path).unwrap();
 
     send(
         &mut stdin,
@@ -265,6 +268,41 @@ exit 0
         .as_str()
         .unwrap()
         .contains("Fixture arithmetic helpers"));
+    assert!(pod_parse_marker.exists());
+    std::fs::remove_file(&pod_parse_marker).unwrap();
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": module_doc_uri,
+                    "languageId": "zuzu",
+                    "version": 1,
+                    "text": module_doc_source
+                }
+            }
+        }),
+    );
+    let module_doc_diagnostics = read_method(&mut reader, "textDocument/publishDiagnostics");
+    assert_eq!(module_doc_diagnostics["params"]["uri"], module_doc_uri);
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 48,
+            "method": "completionItem/resolve",
+            "params": completion_item(&completion, "example/math")
+        }),
+    );
+    let refreshed_completion = read_response(&mut reader, 48);
+    assert_eq!(
+        refreshed_completion["result"]["documentation"]["kind"],
+        "markdown"
+    );
     assert!(pod_parse_marker.exists());
 
     send(
@@ -1071,9 +1109,6 @@ exit 0
         .unwrap()
         .contains("zuzu-distribution.json"));
 
-    let module_doc_uri = Url::from_file_path(root.join("modules").join("example").join("math.zzm"))
-        .unwrap()
-        .to_string();
     send(
         &mut stdin,
         json!({
