@@ -314,6 +314,13 @@ struct CallableSignature {
     name: String,
     label: String,
     parameters: Vec<String>,
+    kind: CallableKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallableKind {
+    Constructor,
+    Function,
 }
 
 #[derive(Debug, Clone)]
@@ -666,7 +673,7 @@ impl Analyzer {
     pub fn signature_help(&self, uri: &str, position: Position) -> Option<SignatureHelp> {
         let document = self.document(uri)?;
         let context = document.call_context(position)?;
-        let signature = self.signature_for(document, &context.name)?;
+        let signature = self.signature_for(document, &context.name, context.kind)?;
 
         Some(SignatureHelp {
             label: signature.label.clone(),
@@ -687,7 +694,7 @@ impl Analyzer {
             .into_iter()
             .filter(|call| ranges_overlap(range, call.range))
             .filter_map(|call| {
-                let signature = self.signature_for(document, &call.name)?;
+                let signature = self.signature_for(document, &call.name, call.kind)?;
                 Some(
                     call.arguments
                         .into_iter()
@@ -710,16 +717,17 @@ impl Analyzer {
         &'a self,
         document: &'a Document,
         name: &str,
+        kind: CallableKind,
     ) -> Option<&'a CallableSignature> {
         document
             .signatures
             .iter()
-            .find(|signature| signature.name == name)
+            .find(|signature| signature.name == name && signature.kind == kind)
             .or_else(|| {
                 self.all_documents()
                     .into_iter()
                     .flat_map(|document| document.signatures.iter())
-                    .find(|signature| signature.name == name)
+                    .find(|signature| signature.name == name && signature.kind == kind)
             })
     }
 
@@ -1831,6 +1839,7 @@ impl Document {
             }
             "class_declaration" => {
                 self.collect_named_symbol(node, SymbolKind::Class, "class");
+                self.collect_constructor_signature(node);
                 self.collect_type_relations(node);
             }
             "trait_declaration" => {
@@ -2106,7 +2115,50 @@ impl Document {
             name: name.to_string(),
             label: format!("{}({})", name, parameter_names.join(", ")),
             parameters: parameter_names,
+            kind: CallableKind::Function,
         });
+    }
+
+    fn collect_constructor_signature(&mut self, node: Node) {
+        let Some(name) = node.child_by_field_name("name") else {
+            return;
+        };
+        let Ok(name) = name.utf8_text(self.text.as_bytes()) else {
+            return;
+        };
+
+        let parameters = node
+            .child_by_field_name("body")
+            .map(|body| self.class_field_names(body))
+            .unwrap_or_default();
+
+        self.signatures.push(CallableSignature {
+            name: name.to_string(),
+            label: format!("{}({})", name, parameters.join(", ")),
+            parameters,
+            kind: CallableKind::Constructor,
+        });
+    }
+
+    fn class_field_names(&self, body: Node) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut cursor = body.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "field_declaration" {
+                    if let Some(name) = child.child_by_field_name("name") {
+                        if let Ok(name) = name.utf8_text(self.text.as_bytes()) {
+                            names.push(name.to_string());
+                        }
+                    }
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        names
     }
 
     fn collect_field_accessor_signatures(&mut self, node: Node) {
@@ -2147,6 +2199,7 @@ impl Document {
                 label: format!("{}({})", name, parameters.join(", ")),
                 name,
                 parameters,
+                kind: CallableKind::Function,
             });
         }
     }
@@ -2835,7 +2888,7 @@ impl Document {
     }
 
     fn collect_call_argument_positions(&self, node: Node, calls: &mut Vec<CallArguments>) {
-        if node.kind() == "call_expression" {
+        if matches!(node.kind(), "call_expression" | "new_expression") {
             if let Some(call) = self.call_arguments_for_node(node) {
                 calls.push(call);
             }
@@ -2877,9 +2930,8 @@ impl Document {
     }
 
     fn call_arguments_for_node(&self, node: Node) -> Option<CallArguments> {
-        let function = node.child_by_field_name("function")?;
         let arguments = node.child_by_field_name("arguments")?;
-        let (name, _) = self.callable_name_for_function(function)?;
+        let (name, kind) = self.callable_name_for_call_node(node)?;
 
         let mut positions = Vec::new();
         let mut cursor = arguments.walk();
@@ -2900,6 +2952,7 @@ impl Document {
 
         Some(CallArguments {
             name,
+            kind,
             range: self.node_range(node),
             arguments: positions,
         })
@@ -2911,7 +2964,7 @@ impl Document {
         position: Position,
         best: &mut Option<(usize, CallContext)>,
     ) {
-        if node.kind() == "call_expression" {
+        if matches!(node.kind(), "call_expression" | "new_expression") {
             if let Some(context) = self.call_context_for_node(node, position) {
                 let width = node.end_byte().saturating_sub(node.start_byte());
                 if best
@@ -2935,16 +2988,37 @@ impl Document {
     }
 
     fn call_context_for_node(&self, node: Node, position: Position) -> Option<CallContext> {
-        let function = node.child_by_field_name("function")?;
         let arguments = node.child_by_field_name("arguments")?;
         if !position_in_range(position, self.node_range(arguments)) {
             return None;
         }
-        let (name, _) = self.callable_name_for_function(function)?;
+        let (name, kind) = self.callable_name_for_call_node(node)?;
         Some(CallContext {
             name,
+            kind,
             active_parameter: self.active_argument(arguments, position)?,
         })
+    }
+
+    fn callable_name_for_call_node(&self, node: Node) -> Option<(String, CallableKind)> {
+        match node.kind() {
+            "call_expression" => {
+                let function = node.child_by_field_name("function")?;
+                self.callable_name_for_function(function)
+                    .map(|(name, _)| (name, CallableKind::Function))
+            }
+            "new_expression" => {
+                let target = node.child_by_field_name("class")?;
+                self.constructor_name_for_target(target)
+                    .map(|name| (name, CallableKind::Constructor))
+            }
+            _ => None,
+        }
+    }
+
+    fn constructor_name_for_target(&self, target: Node) -> Option<String> {
+        let name = target.utf8_text(self.text.as_bytes()).ok()?;
+        is_identifier(name).then(|| name.to_string())
     }
 
     fn callable_name_for_function(&self, function: Node) -> Option<(String, Range)> {
@@ -3031,12 +3105,14 @@ impl Document {
 #[derive(Debug, Clone)]
 struct CallContext {
     name: String,
+    kind: CallableKind,
     active_parameter: u32,
 }
 
 #[derive(Debug, Clone)]
 struct CallArguments {
     name: String,
+    kind: CallableKind,
     range: Range,
     arguments: Vec<Position>,
 }
@@ -4072,6 +4148,40 @@ mod tests {
         assert!(hints
             .iter()
             .any(|hint| hint.label == "factor:" && hint.position == Position::new(7, 14)));
+    }
+
+    #[test]
+    fn provides_signature_help_for_constructor_calls() {
+        let mut analyzer = Analyzer::new(Vec::new());
+        analyzer.upsert_document(
+            "file:///example.zzs",
+            concat!(
+                "class Person {\n",
+                "\tlet String name;\n",
+                "\tlet Number age;\n",
+                "}\n",
+                "function main() {\n",
+                "\tlet person := new Person(\"Zia\", 3);\n",
+                "}\n",
+            ),
+        );
+        let help = analyzer
+            .signature_help("file:///example.zzs", Position::new(5, 34))
+            .expect("constructor signature help");
+        assert_eq!(help.label, "Person(name, age)");
+        assert_eq!(help.parameters, vec!["name", "age"]);
+        assert_eq!(help.active_parameter, 1);
+
+        let hints = analyzer.inlay_hints(
+            "file:///example.zzs",
+            Range::new(Position::new(0, 0), Position::new(6, 0)),
+        );
+        assert!(hints
+            .iter()
+            .any(|hint| hint.label == "name:" && hint.position == Position::new(5, 26)));
+        assert!(hints
+            .iter()
+            .any(|hint| hint.label == "age:" && hint.position == Position::new(5, 33)));
     }
 
     #[test]

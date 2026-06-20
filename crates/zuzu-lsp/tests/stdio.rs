@@ -304,6 +304,25 @@ exit 0
         "markdown"
     );
     assert!(pod_parse_marker.exists());
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didClose",
+            "params": {
+                "textDocument": { "uri": module_doc_uri }
+            }
+        }),
+    );
+    let module_doc_close_diagnostics = read_method(&mut reader, "textDocument/publishDiagnostics");
+    assert_eq!(
+        module_doc_close_diagnostics["params"]["uri"],
+        module_doc_uri
+    );
+    assert_eq!(
+        module_doc_close_diagnostics["params"]["diagnostics"],
+        json!([])
+    );
 
     send(
         &mut stdin,
@@ -650,6 +669,80 @@ exit 0
     assert_eq!(inlay_hints["result"][0]["label"], "a:");
     assert_eq!(inlay_hints["result"][1]["label"], "b:");
     assert_eq!(inlay_hints["result"][0]["kind"], 2);
+
+    let constructor_sig_uri = Url::from_file_path(root.join("scripts").join("constructor.zzs"))
+        .unwrap()
+        .to_string();
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": constructor_sig_uri,
+                    "languageId": "zuzu",
+                    "version": 1,
+                    "text": "class Person {\n\tlet String name;\n\tlet Number age;\n}\nfunction main() {\n\tlet person := new Person(\"Zia\", 3);\n}\n"
+                }
+            }
+        }),
+    );
+    let constructor_sig_diagnostics = read_method(&mut reader, "textDocument/publishDiagnostics");
+    assert_eq!(
+        constructor_sig_diagnostics["params"]["uri"],
+        constructor_sig_uri
+    );
+    assert_eq!(
+        constructor_sig_diagnostics["params"]["diagnostics"],
+        json!([])
+    );
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 49,
+            "method": "textDocument/signatureHelp",
+            "params": {
+                "textDocument": { "uri": constructor_sig_uri },
+                "position": { "line": 5, "character": 34 }
+            }
+        }),
+    );
+    let constructor_signature = read_response(&mut reader, 49);
+    assert_eq!(
+        constructor_signature["result"]["signatures"][0]["label"],
+        "Person(name, age)"
+    );
+    assert_eq!(constructor_signature["result"]["activeParameter"], 1);
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 50,
+            "method": "textDocument/inlayHint",
+            "params": {
+                "textDocument": { "uri": constructor_sig_uri },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 7, "character": 0 }
+                }
+            }
+        }),
+    );
+    let constructor_hints = read_response(&mut reader, 50);
+    assert!(constructor_hints["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|hint| hint["label"] == "name:" && hint["position"]["character"] == 26));
+    assert!(constructor_hints["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|hint| hint["label"] == "age:" && hint["position"]["character"] == 33));
 
     send(
         &mut stdin,
