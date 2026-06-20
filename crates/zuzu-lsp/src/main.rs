@@ -146,23 +146,41 @@ impl RawServerSettings {
         ]
         .into_iter()
         .flatten()
-        .find_map(Self::from_value)
+        .find_map(Self::from_explicit_value)
         .unwrap_or_default()
     }
 
     fn from_configuration_params(params: &serde_json::Value) -> Option<Self> {
-        [
-            params.pointer("/settings/zuzu"),
-            params.pointer("/zuzu"),
-            Some(params),
-        ]
-        .into_iter()
-        .flatten()
-        .find_map(Self::from_value)
+        if let Some(value) = params.pointer("/settings/zuzu") {
+            return Self::from_explicit_value(value);
+        }
+        if let Some(value) = params.pointer("/zuzu") {
+            return Self::from_explicit_value(value);
+        }
+        Self::from_value(params)
+    }
+
+    fn from_explicit_value(value: &serde_json::Value) -> Option<Self> {
+        Self::settings_from_object(value.as_object()?)
     }
 
     fn from_value(value: &serde_json::Value) -> Option<Self> {
         let object = value.as_object()?;
+        let settings = Self::settings_from_object(object)?;
+        let has_settings_key = object.contains_key("moduleRoots")
+            || object.contains_key("module_roots")
+            || object.contains_key("runtimeParserDiagnostics")
+            || object.contains_key("runtime_parser_diagnostics");
+        if !has_settings_key
+            && settings.module_roots.is_empty()
+            && settings.runtime_parser_diagnostics.is_none()
+        {
+            return None;
+        }
+        Some(settings)
+    }
+
+    fn settings_from_object(object: &serde_json::Map<String, serde_json::Value>) -> Option<Self> {
         let module_roots: Vec<String> = object
             .get("moduleRoots")
             .or_else(|| object.get("module_roots"))
@@ -178,9 +196,6 @@ impl RawServerSettings {
             .get("runtimeParserDiagnostics")
             .or_else(|| object.get("runtime_parser_diagnostics"))
             .and_then(|value| value.as_bool());
-        if module_roots.is_empty() && runtime_parser_diagnostics.is_none() {
-            return None;
-        }
         Some(Self {
             module_roots,
             runtime_parser_diagnostics,
@@ -2775,6 +2790,32 @@ mod tests {
 
         assert_eq!(settings.module_roots, vec!["vendor/modules"]);
         assert_eq!(settings.runtime_parser_diagnostics, Some(true));
+    }
+
+    #[test]
+    fn clears_server_settings_from_empty_configuration_payload() {
+        let settings = RawServerSettings::from_configuration_params(&json!({
+            "settings": {
+                "zuzu": {}
+            }
+        }))
+        .expect("explicit empty settings");
+        assert!(settings.module_roots.is_empty());
+        assert_eq!(settings.runtime_parser_diagnostics, None);
+
+        let direct_settings = RawServerSettings::from_configuration_params(&json!({
+            "moduleRoots": []
+        }))
+        .expect("direct empty module roots setting");
+        assert!(direct_settings.module_roots.is_empty());
+        assert_eq!(direct_settings.runtime_parser_diagnostics, None);
+
+        assert!(RawServerSettings::from_configuration_params(&json!({
+            "settings": {
+                "other": {}
+            }
+        }))
+        .is_none());
     }
 
     #[test]
