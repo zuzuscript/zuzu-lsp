@@ -1,6 +1,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -8,7 +9,7 @@ use url::Url;
 
 #[test]
 fn serves_basic_stdio_requests() {
-    let tool_root = std::env::temp_dir().join(format!("zuzu-lsp-tool-root-{}", std::process::id()));
+    let tool_root = unique_temp_dir("zuzu-lsp-tool-root");
     std::fs::create_dir_all(&tool_root).unwrap();
     write_fake_command(
         &tool_root.join("zuzu-tidy.pl"),
@@ -68,13 +69,11 @@ exit 0
 
     let root = fixture_root();
     let canonical_root = root.canonicalize().unwrap();
-    let extra_root =
-        std::env::temp_dir().join(format!("zuzu-lsp-extra-root-{}", std::process::id()));
+    let extra_root = unique_temp_dir("zuzu-lsp-extra-root");
     let extra_module_dir = extra_root.join("modules").join("extra");
     std::fs::create_dir_all(&extra_module_dir).unwrap();
     std::fs::write(extra_module_dir.join("thing.zzm"), "class Thing;\n").unwrap();
-    let configured_root =
-        std::env::temp_dir().join(format!("zuzu-lsp-configured-root-{}", std::process::id()));
+    let configured_root = unique_temp_dir("zuzu-lsp-configured-root");
     let configured_module_dir = configured_root.join("configured");
     std::fs::create_dir_all(&configured_module_dir).unwrap();
     std::fs::write(
@@ -1837,10 +1836,7 @@ exit 0
 
 #[test]
 fn refuses_tool_execution_in_untrusted_workspace() {
-    let tool_root = std::env::temp_dir().join(format!(
-        "zuzu-lsp-untrusted-tool-root-{}",
-        std::process::id()
-    ));
+    let tool_root = unique_temp_dir("zuzu-lsp-untrusted-tool-root");
     std::fs::create_dir_all(&tool_root).unwrap();
     let pod_parse_marker = tool_root.join("pod-parse-ran");
     let tidy_marker = tool_root.join("tidy-ran");
@@ -2064,10 +2060,7 @@ fn refuses_tool_execution_in_untrusted_workspace() {
 
 #[test]
 fn can_disable_runtime_parser_diagnostics_with_settings() {
-    let tool_root = std::env::temp_dir().join(format!(
-        "zuzu-lsp-parser-settings-tool-root-{}",
-        std::process::id()
-    ));
+    let tool_root = unique_temp_dir("zuzu-lsp-parser-settings-tool-root");
     std::fs::create_dir_all(&tool_root).unwrap();
     write_fake_command(
         &tool_root.join("zuzu"),
@@ -2165,8 +2158,7 @@ exit 0
 
 #[test]
 fn publishes_distribution_metadata_diagnostics() {
-    let root =
-        std::env::temp_dir().join(format!("zuzu-lsp-bad-metadata-root-{}", std::process::id()));
+    let root = unique_temp_dir("zuzu-lsp-bad-metadata-root");
     std::fs::create_dir_all(&root).unwrap();
     let metadata_path = root.join("zuzu-distribution.json");
     let valid_metadata = "{\n\t\"name\": \"live-metadata\",\n\t\"version\": \"0.0.1\",\n\t\"author\": \"Example Author\",\n\t\"license\": \"MIT\",\n\t\"abstract\": \"Live metadata fixture.\",\n\t\"dependencies\": {}\n}\n";
@@ -2264,15 +2256,9 @@ fn publishes_distribution_metadata_diagnostics() {
 
 #[test]
 fn publishes_distribution_metadata_toolchain_diagnostics() {
-    let root = std::env::temp_dir().join(format!(
-        "zuzu-lsp-metadata-toolchain-root-{}",
-        std::process::id()
-    ));
+    let root = unique_temp_dir("zuzu-lsp-metadata-toolchain-root");
     std::fs::create_dir_all(&root).unwrap();
-    let home = std::env::temp_dir().join(format!(
-        "zuzu-lsp-metadata-toolchain-home-{}",
-        std::process::id()
-    ));
+    let home = unique_temp_dir("zuzu-lsp-metadata-toolchain-home");
     std::fs::create_dir_all(&home).unwrap();
     let metadata_path = root.join("zuzu-distribution.json");
     let metadata_text = "{\n\t\"name\": \"missing-tools\",\n\t\"version\": \"0.0.1\",\n\t\"author\": \"Example Author\",\n\t\"license\": \"MIT\",\n\t\"abstract\": \"Missing package tool fixture.\",\n\t\"dependencies\": {}\n}\n";
@@ -2625,6 +2611,15 @@ fn write_fake_command(path: &std::path::Path, body: &str) {
     file.sync_all().unwrap();
     drop(file);
     make_executable(path);
+}
+
+fn unique_temp_dir(prefix: &str) -> PathBuf {
+    static NEXT_TEMP_DIR: AtomicUsize = AtomicUsize::new(0);
+
+    let id = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!("{prefix}-{}-{id}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    root
 }
 
 #[cfg(unix)]
