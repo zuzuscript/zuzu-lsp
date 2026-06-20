@@ -342,6 +342,9 @@ fn initialize_roots(params: &InitializeParams) -> Vec<PathBuf> {
                 roots.push(path);
             }
         }
+        if let Some(root_path) = &params.root_path {
+            roots.push(PathBuf::from(root_path));
+        }
     }
 
     normalize_roots(roots)
@@ -2839,6 +2842,21 @@ mod tests {
         );
         assert_eq!(document.kind, DocumentKind::Script);
         assert!(document.is_zuzu_document());
+    }
+
+    #[test]
+    fn reads_deprecated_root_path_from_initialize_payload() {
+        let params: InitializeParams = serde_json::from_value(json!({
+            "processId": null,
+            "rootPath": "/workspace/legacy-client",
+            "capabilities": {}
+        }))
+        .unwrap();
+
+        assert_eq!(
+            initialize_roots(&params),
+            vec![PathBuf::from("/workspace/legacy-client")]
+        );
     }
 
     #[test]
