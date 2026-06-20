@@ -26,3 +26,8 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --all-targets -- --test-threads=1
+
+      - name: Check cargo install target
+        run: |
+          cargo install --path crates/zuzu-lsp --locked --root target/install-check
+          target/install-check/bin/zuzu-lsp --version
