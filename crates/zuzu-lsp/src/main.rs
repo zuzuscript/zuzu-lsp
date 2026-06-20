@@ -2755,9 +2755,13 @@ fn is_zuzu_document(uri: &str, text: &str) -> bool {
 
 fn classify_document_with_language(uri: &str, language_id: &str, text: &str) -> DocumentKind {
     match classify_document(uri, text) {
-        DocumentKind::Other if language_id == "zuzu" => DocumentKind::Script,
+        DocumentKind::Other if is_zuzu_language_id(language_id) => DocumentKind::Script,
         kind => kind,
     }
+}
+
+fn is_zuzu_language_id(language_id: &str) -> bool {
+    matches!(language_id, "zuzu" | "ZuzuScript" | "zuzuscript")
 }
 
 fn classify_document(uri: &str, text: &str) -> DocumentKind {
@@ -2834,14 +2838,16 @@ mod tests {
 
     #[test]
     fn uses_language_id_for_untitled_zuzu_documents() {
-        let document = DocumentSnapshot::new(
-            "untitled:Untitled-1".to_string(),
-            "zuzu".to_string(),
-            Some(1),
-            "say 1;\n".to_string(),
-        );
-        assert_eq!(document.kind, DocumentKind::Script);
-        assert!(document.is_zuzu_document());
+        for language_id in ["zuzu", "ZuzuScript", "zuzuscript"] {
+            let document = DocumentSnapshot::new(
+                "untitled:Untitled-1".to_string(),
+                language_id.to_string(),
+                Some(1),
+                "say 1;\n".to_string(),
+            );
+            assert_eq!(document.kind, DocumentKind::Script);
+            assert!(document.is_zuzu_document());
+        }
     }
 
     #[test]
