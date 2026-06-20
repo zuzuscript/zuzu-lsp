@@ -1696,14 +1696,19 @@ exit 0
         missing_import_actions["result"][0]["edit"]["documentChanges"][0]["edits"][0]["newText"],
         "from example/math import Calculator;\n"
     );
-    assert!(missing_import_actions["result"]
+    let format_action = missing_import_actions["result"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|action| action["title"] == "Run Zuzu formatter"
-            && action["kind"] == "source"
-            && action["command"]["command"] == "zuzu.formatDocument"
-            && action["command"]["arguments"][0] == undefined_uri));
+        .find(|action| action["title"] == "Run Zuzu formatter" && action["kind"] == "source")
+        .expect("format source action");
+    assert!(format_action["command"].is_null());
+    assert_eq!(
+        format_action["edit"]["changes"]
+            .get(&undefined_uri)
+            .unwrap()[0]["newText"],
+        "function formatted() {\n\tsay 42;\n}\n"
+    );
 
     send(
         &mut stdin,

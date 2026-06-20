@@ -1108,8 +1108,8 @@ impl Server {
             .into_iter()
             .filter_map(code_action_for_import_fix)
             .collect();
-        if self.analyzer.document(&uri).is_some() {
-            actions.push(format_document_code_action(&uri));
+        if let Some(action) = self.format_document_code_action(&uri) {
+            actions.push(action);
         }
         self.send_response(Response::new_ok(id, Some(actions)))
     }
@@ -1511,6 +1511,30 @@ impl Server {
             "Zuzu command: {command}; status: {}",
             output.status
         ))
+    }
+
+    fn format_document_code_action(&self, uri: &str) -> Option<CodeActionOrCommand> {
+        if !self.workspace_trusted {
+            return None;
+        }
+        let document = self.analyzer.document(uri)?;
+        let text = self.toolchain.format_text(document.text()).ok()?;
+        let uri = parse_uri(uri)?;
+        let edit = WorkspaceEdit::new(HashMap::from([(
+            uri,
+            vec![TextEdit {
+                range: to_range(document.full_range()),
+                new_text: text,
+            }],
+        )]));
+
+        Some(CodeActionOrCommand::CodeAction(CodeAction {
+            title: "Run Zuzu formatter".to_string(),
+            kind: Some(CodeActionKind::SOURCE),
+            edit: Some(edit),
+            is_preferred: Some(false),
+            ..Default::default()
+        }))
     }
 
     fn send_log_message(&self, message: String) -> Result<()> {
@@ -2018,20 +2042,6 @@ fn code_action_for_import_fix(fix: ImportFix) -> Option<CodeActionOrCommand> {
         is_preferred: Some(false),
         ..Default::default()
     }))
-}
-
-fn format_document_code_action(uri: &str) -> CodeActionOrCommand {
-    CodeActionOrCommand::CodeAction(CodeAction {
-        title: "Run Zuzu formatter".to_string(),
-        kind: Some(CodeActionKind::SOURCE),
-        command: Some(LspCommand {
-            title: "Run Zuzu formatter".to_string(),
-            command: "zuzu.formatDocument".to_string(),
-            arguments: Some(vec![json!(uri)]),
-        }),
-        is_preferred: Some(false),
-        ..Default::default()
-    })
 }
 
 fn create_file_workspace_edit(path: &Path) -> Option<WorkspaceEdit> {
