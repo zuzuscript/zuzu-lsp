@@ -48,6 +48,16 @@ jobs:
       - name: Build release binary
         run: cargo build --release -p zuzu-lsp --locked
 
+      - name: Smoke test Unix release binary
+        if: matrix.shell == 'bash'
+        shell: bash
+        run: target/release/${{ matrix.binary }} --version
+
+      - name: Smoke test Windows release binary
+        if: matrix.shell == 'pwsh'
+        shell: pwsh
+        run: '& "target/release/${{ matrix.binary }}" --version'
+
       - name: Package Unix archive
         if: matrix.shell == 'bash'
         shell: bash
