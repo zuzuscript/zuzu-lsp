@@ -620,6 +620,30 @@ exit 0
         &mut stdin,
         json!({
             "jsonrpc": "2.0",
+            "id": 51,
+            "method": "workspace/symbol",
+            "params": {
+                "query": "Calculator"
+            }
+        }),
+    );
+    let workspace_symbols = read_response(&mut reader, 51);
+    assert!(workspace_symbols["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|symbol| {
+            symbol["name"] == "Calculator"
+                && symbol["location"]["uri"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("/modules/example/math.zzm")
+        }));
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
             "id": 36,
             "method": "textDocument/formatting",
             "params": {
