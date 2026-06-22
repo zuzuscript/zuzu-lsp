@@ -2206,14 +2206,21 @@ impl Document {
     fn collect_top_level_duplicate_diagnostics(&mut self) {
         let tree = self.tree.clone();
         let root = tree.root_node();
-        let mut seen: BTreeMap<(String, String), Range> = BTreeMap::new();
+        let mut seen: BTreeMap<(String, String, bool), Range> = BTreeMap::new();
         let mut cursor = root.walk();
 
         if cursor.goto_first_child() {
             loop {
                 let node = cursor.node();
                 if let Some((detail, name, range)) = self.top_level_declaration(node) {
-                    let key = (detail.to_string(), name.to_string());
+                    // A `function_predeclaration` (forward declaration) followed by
+                    // its matching `function_declaration` is not a duplicate; only
+                    // two of the same kind for the same name are.
+                    let key = (
+                        detail.to_string(),
+                        name.to_string(),
+                        node.kind() == "function_predeclaration",
+                    );
                     if seen.insert(key, range).is_some() {
                         self.diagnostics.push(Diagnostic {
                             range,
@@ -2413,12 +2420,46 @@ impl Document {
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         let mut names = globals.clone();
+        self.collect_enclosing_field_names(callable, &mut names);
         self.collect_declared_names(callable, &mut names);
         let Some(body) = callable.child_by_field_name("body") else {
             return;
         };
         let mut reported = BTreeSet::new();
         self.collect_unknown_identifiers(body, &names, &mut reported, diagnostics);
+    }
+
+    // Methods may reference their own class's fields without `self.`; find
+    // the immediately enclosing class and add its field names to scope.
+    fn collect_enclosing_field_names(&self, callable: Node, names: &mut BTreeSet<String>) {
+        let mut current = callable.parent();
+        let class = loop {
+            match current {
+                Some(node) if node.kind() == "class_declaration" => break Some(node),
+                Some(node) => current = node.parent(),
+                None => break None,
+            }
+        };
+        let Some(class) = class else {
+            return;
+        };
+        let Some(body) = class.child_by_field_name("body") else {
+            return;
+        };
+        let mut cursor = body.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "field_declaration" {
+                    if let Some(name) = child.child_by_field_name("name") {
+                        self.insert_identifier_name(name, names);
+                    }
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
     }
 
     fn collect_declared_names(&self, node: Node, names: &mut BTreeSet<String>) {
@@ -2486,6 +2527,8 @@ impl Document {
     fn global_names(&self) -> BTreeSet<String> {
         let mut names: BTreeSet<String> = KEYWORDS.iter().map(|word| (*word).to_string()).collect();
         names.extend(BUILTIN_STATEMENTS.iter().map(|word| (*word).to_string()));
+        names.extend(BUILTIN_TYPES.iter().map(|word| (*word).to_string()));
+        names.extend(BUILTIN_FUNCTIONS.iter().map(|word| (*word).to_string()));
         names.extend(["self", "super"].into_iter().map(String::from));
         names.extend(self.imports.iter().flat_map(|import| {
             import
@@ -3145,6 +3188,37 @@ const KEYWORDS: &[&str] = &[
 ];
 
 const BUILTIN_STATEMENTS: &[&str] = &["assert", "debug", "die", "print", "say", "warn"];
+
+// Mirrors `Scope::new_root()` in zuzu-rust/src/sema.rs: global type names
+// available everywhere without an explicit import.
+const BUILTIN_TYPES: &[&str] = &[
+    "Any",
+    "Class",
+    "Null",
+    "Object",
+    "Collection",
+    "Exception",
+    "AssertionException",
+    "TypeException",
+    "CancelledException",
+    "TimeoutException",
+    "ChannelClosedException",
+    "Array",
+    "Dict",
+    "PairList",
+    "Set",
+    "Bag",
+    "Pair",
+    "String",
+    "BinaryString",
+    "Number",
+    "Boolean",
+    "Regexp",
+    "Function",
+];
+
+// Global functions available everywhere without an explicit import.
+const BUILTIN_FUNCTIONS: &[&str] = &["to_binary", "to_string"];
 
 const SYMBOL_OPERATORS: &[SymbolOperator] = &[
     SymbolOperator {

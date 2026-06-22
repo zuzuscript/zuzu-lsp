@@ -619,7 +619,7 @@ checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
 [[package]]
 name = "tree-sitter-zuzu"
 version = "0.0.1"
-source = "git+https://github.com/zuzuscript/tree-sitter-zuzu?rev=c0e4d4ade0f8289167fcb7758f8bf8ad4ac0077a#c0e4d4ade0f8289167fcb7758f8bf8ad4ac0077a"
+source = "git+https://github.com/zuzuscript/tree-sitter-zuzu?rev=aaa16d671671ddd370404fa7fabdcb23b5d5afb0#aaa16d671671ddd370404fa7fabdcb23b5d5afb0"
 dependencies = [
  "cc",
  "tree-sitter",
