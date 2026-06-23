@@ -4,6 +4,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
 
@@ -25,11 +26,9 @@ pub struct Toolchain {
 pub enum ToolchainError {
     #[error("zuzu-tidy.pl was not found")]
     MissingFormatter,
-    #[error("could not open formatter stdin for `{command}`")]
-    FormatterStdinUnavailable { command: PathBuf },
-    #[error("could not write source to formatter `{command}`: {source}")]
-    WriteFormatterStdin {
-        command: PathBuf,
+    #[error("could not write temporary formatter input `{path}`: {source}")]
+    WriteFormatterInput {
+        path: PathBuf,
         #[source]
         source: std::io::Error,
     },
@@ -116,40 +115,27 @@ impl Toolchain {
         };
 
         let line_ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
+        let input_path = temporary_formatter_input_path();
+        fs::write(&input_path, text).map_err(|source| ToolchainError::WriteFormatterInput {
+            path: input_path.clone(),
+            source,
+        })?;
+
         let mut process = Command::new(formatter);
         apply_minimal_environment(&mut process, None);
-        let mut child = process
-            .arg("--stdin")
-            .stdin(Stdio::piped())
+        let output = process
+            .arg(&input_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| ToolchainError::RunFormatter {
-                command: formatter.clone(),
-                source,
-            })?;
-
-        let mut stdin =
-            child
-                .stdin
-                .take()
-                .ok_or_else(|| ToolchainError::FormatterStdinUnavailable {
+            .output()
+            .map_err(|source| {
+                let _ = fs::remove_file(&input_path);
+                ToolchainError::RunFormatter {
                     command: formatter.clone(),
-                })?;
-        stdin
-            .write_all(text.as_bytes())
-            .map_err(|source| ToolchainError::WriteFormatterStdin {
-                command: formatter.clone(),
-                source,
+                    source,
+                }
             })?;
-        drop(stdin);
-
-        let output = child
-            .wait_with_output()
-            .map_err(|source| ToolchainError::RunFormatter {
-                command: formatter.clone(),
-                source,
-            })?;
+        let _ = fs::remove_file(&input_path);
 
         if !output.status.success() {
             return Err(ToolchainError::FormatterFailed {
@@ -598,6 +584,14 @@ fn normalize_line_endings(text: &str, line_ending: &str) -> String {
     }
 }
 
+fn temporary_formatter_input_path() -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    env::temp_dir().join(format!("zuzu-lsp-format-{}-{nanos}.zzs", std::process::id()))
+}
+
 fn parse_lint_diagnostics(stderr: &str) -> Vec<ParserDiagnostic> {
     stderr.lines().filter_map(parse_lint_diagnostic).collect()
 }
@@ -747,7 +741,7 @@ mod tests {
         let root = unique_temp_dir("zuzu-toolchain-format-crlf-lf");
         fs::create_dir_all(&root).unwrap();
         let script = root.join("zuzu-tidy.pl");
-        write_fake_command(&script, "cat >/dev/null\nprintf 'say 1;\\nsay 2;\\n'\n");
+        write_fake_command(&script, "cat \"$1\" >/dev/null\nprintf 'say 1;\\nsay 2;\\n'\n");
 
         let toolchain = Toolchain {
             tidy: Some(script),
@@ -767,7 +761,7 @@ mod tests {
         let script = root.join("zuzu-tidy.pl");
         write_fake_command(
             &script,
-            "cat >/dev/null\nprintf 'say 1;\\r\\nsay 2;\\r\\n'\n",
+            "cat \"$1\" >/dev/null\nprintf 'say 1;\\r\\nsay 2;\\r\\n'\n",
         );
 
         let toolchain = Toolchain {
@@ -789,7 +783,7 @@ mod tests {
         let script = root.join("zuzu-tidy.pl");
         write_fake_command(
             &script,
-            "cat >/dev/null\nprintf 'bad input\\n' >&2\nexit 7\n",
+            "cat \"$1\" >/dev/null\nprintf 'bad input\\n' >&2\nexit 7\n",
         );
 
         let toolchain = Toolchain {

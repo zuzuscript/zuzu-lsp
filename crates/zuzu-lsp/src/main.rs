@@ -14,7 +14,7 @@ use lsp_types::request::{
     CodeActionRequest, CodeLensRequest, Completion, DocumentDiagnosticRequest,
     DocumentHighlightRequest, DocumentLinkRequest, DocumentSymbolRequest, ExecuteCommand,
     FoldingRangeRequest, Formatting, GotoDefinition, HoverRequest, InlayHintRequest,
-    PrepareRenameRequest, References, Rename, Request as LspRequest, ResolveCompletionItem,
+    PrepareRenameRequest, RangeFormatting, References, Rename, Request as LspRequest, ResolveCompletionItem,
     SelectionRangeRequest, SemanticTokensFullRequest, Shutdown, SignatureHelpRequest,
     TypeHierarchyPrepare, TypeHierarchySubtypes, TypeHierarchySupertypes,
     WorkspaceDiagnosticRequest, WorkspaceSymbolRequest,
@@ -31,9 +31,10 @@ use lsp_types::{
     DidOpenTextDocumentParams, DocumentChangeOperation, DocumentChanges, DocumentDiagnosticParams,
     DocumentDiagnosticReport, DocumentDiagnosticReportResult, DocumentFormattingParams,
     DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentLink,
-    DocumentLinkOptions, DocumentLinkParams, DocumentSymbol, DocumentSymbolParams,
-    DocumentSymbolResponse, Documentation, ExecuteCommandOptions, FoldingRange, FoldingRangeKind,
-    FoldingRangeParams, FullDocumentDiagnosticReport, GotoDefinitionResponse, Hover, HoverContents,
+    DocumentLinkOptions, DocumentLinkParams, DocumentRangeFormattingParams, DocumentSymbol,
+    DocumentSymbolParams, DocumentSymbolResponse, Documentation, ExecuteCommandOptions,
+    FoldingRange, FoldingRangeKind, FoldingRangeParams, FullDocumentDiagnosticReport,
+    GotoDefinitionResponse, Hover, HoverContents,
     HoverParams, InitializeParams, InitializeResult, InlayHint, InlayHintKind, InlayHintLabel,
     InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, Location, LogMessageParams,
     MarkedString, MarkupContent, MarkupKind, MessageType, NumberOrString, OneOf,
@@ -297,6 +298,7 @@ fn capabilities() -> ServerCapabilities {
             },
         )),
         document_formatting_provider: Some(OneOf::Left(true)),
+        document_range_formatting_provider: Some(OneOf::Left(true)),
         execute_command_provider: Some(ExecuteCommandOptions {
             commands: vec![
                 "zuzu.doctor".to_string(),
@@ -602,6 +604,7 @@ impl Server {
             WorkspaceDiagnosticRequest::METHOD => self.workspace_diagnostic(request),
             SemanticTokensFullRequest::METHOD => self.semantic_tokens_full(request),
             Formatting::METHOD => self.formatting(request),
+            RangeFormatting::METHOD => self.range_formatting(request),
             ExecuteCommand::METHOD => self.execute_command(request),
             WorkspaceSymbolRequest::METHOD => self.workspace_symbol(request),
             Shutdown::METHOD => {
@@ -1295,6 +1298,33 @@ impl Server {
             request.extract(Formatting::METHOD)?;
         if !self.workspace_trusted {
             return self.send_untrusted_workspace_error(id, "formatting");
+        }
+        let uri = params.text_document.uri.to_string();
+        let Some(document) = self.analyzer.document(&uri) else {
+            return self.send_response(Response::new_ok(id, Option::<Vec<TextEdit>>::None));
+        };
+
+        match self.toolchain.format_text(document.text()) {
+            Ok(text) => {
+                let edits = vec![TextEdit {
+                    range: to_range(document.full_range()),
+                    new_text: text,
+                }];
+                self.send_response(Response::new_ok(id, Some(edits)))
+            }
+            Err(error) => self.send_response(Response::new_err(
+                id,
+                ErrorCode::InternalError as i32,
+                error.to_string(),
+            )),
+        }
+    }
+
+    fn range_formatting(&mut self, request: Request) -> Result<()> {
+        let (id, params): (RequestId, DocumentRangeFormattingParams) =
+            request.extract(RangeFormatting::METHOD)?;
+        if !self.workspace_trusted {
+            return self.send_untrusted_workspace_error(id, "range formatting");
         }
         let uri = params.text_document.uri.to_string();
         let Some(document) = self.analyzer.document(&uri) else {

@@ -1704,8 +1704,8 @@ exit 0
     let try_import_diagnostics = read_method(&mut reader, "textDocument/publishDiagnostics");
     assert_eq!(try_import_diagnostics["params"]["uri"], try_import_uri);
     assert_eq!(
-        try_import_diagnostics["params"]["diagnostics"][0]["code"],
-        "suspicious-try-import"
+        try_import_diagnostics["params"]["diagnostics"].as_array().map(|values| values.len()),
+        Some(0)
     );
 
     let undefined_uri = Url::from_file_path(root.join("scripts").join("undefined.zzs"))

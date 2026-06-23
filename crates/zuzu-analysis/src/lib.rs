@@ -1693,7 +1693,6 @@ fn parse_workspace_document(workspace: &Workspace, uri: String, text: String) ->
             .map(|import| workspace.unresolved_import_diagnostic(import)),
     );
     document.collect_unused_import_diagnostics(workspace);
-    document.collect_try_import_diagnostics(workspace);
     document.collect_missing_dependency_diagnostics(workspace);
     document.collect_portability_diagnostics();
     document.collect_undefined_local_diagnostics();
@@ -2320,27 +2319,6 @@ impl Document {
         }
     }
 
-    fn collect_try_import_diagnostics(&mut self, workspace: &Workspace) {
-        for import in &self.imports {
-            let Some(range) = import.try_range else {
-                continue;
-            };
-            if !workspace.resolve_module(&import.module) {
-                continue;
-            }
-            self.diagnostics.push(Diagnostic {
-                range,
-                severity: DiagnosticSeverity::Warning,
-                source: "zuzu-semantic",
-                code: "suspicious-try-import",
-                message: format!(
-                    "`try import` is unnecessary for resolvable module `{}`",
-                    import.module
-                ),
-            });
-        }
-    }
-
     fn collect_missing_dependency_diagnostics(&mut self, workspace: &Workspace) {
         for import in &self.imports {
             if let Some(diagnostic) = workspace.missing_dependency_diagnostic(&self.uri, import) {
@@ -2394,7 +2372,10 @@ impl Document {
         globals: &BTreeSet<String>,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
-        if matches!(node.kind(), "function_declaration" | "method_declaration") {
+        if matches!(
+            node.kind(),
+            "function_declaration" | "function_expression" | "method_declaration"
+        ) {
             self.collect_callable_undefined_local_diagnostics(node, globals, diagnostics);
         }
 
@@ -2420,6 +2401,20 @@ impl Document {
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         let mut names = globals.clone();
+        let mut current = callable.parent();
+        while let Some(ancestor) = current {
+            match ancestor.kind() {
+                "function_declaration"
+                | "function_predeclaration"
+                | "function_expression"
+                | "method_declaration"
+                | "method_predeclaration" => {
+                    self.collect_declared_names(ancestor, &mut names);
+                }
+                _ => {}
+            }
+            current = ancestor.parent();
+        }
         self.collect_enclosing_field_names(callable, &mut names);
         self.collect_declared_names(callable, &mut names);
         let Some(body) = callable.child_by_field_name("body") else {
@@ -2466,6 +2461,8 @@ impl Document {
         match node.kind() {
             "parameter"
             | "lambda_parameter"
+            | "function_declaration"
+            | "function_predeclaration"
             | "variable_declaration"
             | "let_expression"
             | "catch_clause"
@@ -2480,7 +2477,32 @@ impl Document {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {
-                self.collect_declared_names(cursor.node(), names);
+                let child = cursor.node();
+                match child.kind() {
+                    "function_declaration" | "function_predeclaration" => {
+                        if let Some(name) = child.child_by_field_name("name") {
+                            self.insert_identifier_name(name, names);
+                        }
+                    }
+                    "function_expression" => {
+                        // anonymous functions are scoped separately, so avoid pulling
+                        // their local declarations into the outer scope.
+                    }
+                    "method_declaration" | "method_predeclaration" => {
+                        if let Some(name) = child.child_by_field_name("name") {
+                            self.insert_identifier_name(name, names);
+                        }
+                    }
+                    "class_declaration" | "trait_declaration" => {
+                        if let Some(name) = child.child_by_field_name("name") {
+                            self.insert_identifier_name(name, names);
+                        }
+                    }
+                    "lambda_expression" => {}
+                    _ => {
+                        self.collect_declared_names(child, names);
+                    }
+                }
                 if !cursor.goto_next_sibling() {
                     break;
                 }
@@ -2513,6 +2535,16 @@ impl Document {
             }
         }
 
+        // Nested function/method declarations get their own dedicated pass
+        // (with their own scope) from collect_undefined_local_diagnostics_in_node,
+        // so don't walk into their bodies here using the enclosing scope.
+        if matches!(
+            node.kind(),
+            "function_declaration" | "function_expression" | "method_declaration"
+        ) {
+            return;
+        }
+
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {
@@ -2529,6 +2561,7 @@ impl Document {
         names.extend(BUILTIN_STATEMENTS.iter().map(|word| (*word).to_string()));
         names.extend(BUILTIN_TYPES.iter().map(|word| (*word).to_string()));
         names.extend(BUILTIN_FUNCTIONS.iter().map(|word| (*word).to_string()));
+        names.extend(["__system__", "__global__", "__file__"].into_iter().map(String::from));
         names.extend(["self", "super"].into_iter().map(String::from));
         names.extend(self.imports.iter().flat_map(|import| {
             import
@@ -4013,6 +4046,79 @@ mod tests {
     }
 
     #[test]
+    fn accepts_nested_function_declarations_in_same_scope() {
+        let mut analyzer = Analyzer::new(Vec::new());
+        let diagnostics = analyzer.upsert_document(
+            "file:///example.zzs",
+            "function helper() {\n\treturn 1;\n}\n\nfunction main() {\n\tfunction local() {\n\t\treturn helper();\n\t}\n\tlocal();\n\tlet value := helper();\n}\n",
+        );
+
+        assert!(!diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "undefined-local"));
+    }
+
+    #[test]
+    fn accepts_nested_function_lexical_scopes() {
+        let mut analyzer = Analyzer::new(Vec::new());
+        let diagnostics = analyzer.upsert_document(
+            "file:///example.zzs",
+            concat!(
+                "function main() {\n",
+                "\tlet outer_context := 1;\n",
+                "\tfunction child(should_die) {\n",
+                "\t\tlet msg := \"Failed\";\n",
+                "\t\tif ( should_die ) {\n",
+                "\t\t\tmsg _= ` from ${outer_context}`;\n",
+                "\t\t}\n",
+                "\t\treturn outer_context + should_die;\n",
+                "\t}\n",
+                "\tchild(false);\n",
+                "}\n",
+            ),
+        );
+
+        assert!(!diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "undefined-local"));
+    }
+
+    #[test]
+    fn accepts_nested_function_scopes_with_concise_assignment() {
+        let mut analyzer = Analyzer::new(Vec::new());
+        let diagnostics = analyzer.upsert_document(
+            "file:///example.zzs",
+            concat!(
+                "function main() {\n",
+                "\tlet outer_context := 1;\n",
+                "\tfunction child(should_die) {\n",
+                "\t\tlet msg := \"Failed\";\n",
+                "\t\tmsg _= ` from ${outer_context}` if outer_context;\n",
+                "\t\treturn msg + should_die;\n",
+                "\t}\n",
+                "\tchild(false);\n",
+                "}\n",
+            ),
+        );
+
+        assert!(!diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "undefined-local"));
+    }
+
+    #[test]
+    fn accepts_stdlib_magic_globals() {
+        let mut analyzer = Analyzer::new(Vec::new());
+        let diagnostics = analyzer.upsert_document(
+            "file:///example.zzs",
+            "function main() {\n\tlet system := __system__;\n\tlet global := __global__;\n\tlet file := __file__;\n}\n",
+        );
+        assert!(!diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "undefined-local"));
+    }
+
+    #[test]
     fn completes_fn_keyword() {
         let mut analyzer = Analyzer::new(Vec::new());
         analyzer.upsert_document("file:///example.zzs", "let cb := f\n");
@@ -4637,7 +4743,7 @@ mod tests {
     }
 
     #[test]
-    fn handles_try_import_diagnostics_conservatively() {
+    fn handles_try_import_as_valid_optional_import() {
         let root = unique_temp_dir("zuzu-analysis-try-import");
         let module_dir = root.join("modules").join("lib");
         fs::create_dir_all(&module_dir).unwrap();
@@ -4661,7 +4767,7 @@ mod tests {
             "file:///resolved.zzs",
             "from lib/stuff try import Thing;\nsay Thing;\n",
         );
-        assert!(diagnostics.iter().any(|diagnostic| {
+        assert!(!diagnostics.iter().any(|diagnostic| {
             diagnostic.source == "zuzu-semantic" && diagnostic.code == "suspicious-try-import"
         }));
 
