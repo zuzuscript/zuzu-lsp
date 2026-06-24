@@ -973,30 +973,7 @@ impl Analyzer {
                         .unwrap_or_default();
                 }
 
-                if import.imported_names.is_empty()
-                    || !self.workspace.resolve_module(&import.module)
-                    || !document.import_is_unused(import)
-                {
-                    return Vec::new();
-                }
-
-                vec![ImportFix {
-                    title: format!("Remove unused import `{}`", import.module),
-                    diagnostic: Diagnostic {
-                        range: import.statement_range,
-                        severity: DiagnosticSeverity::Warning,
-                        source: "zuzu-semantic",
-                        code: "unused-import",
-                        message: format!("Imported symbols from `{}` are unused", import.module),
-                    },
-                    action: ImportFixAction::Edit(WorkspaceTextEdit {
-                        uri: uri.to_string(),
-                        edit: TextEdit {
-                            range: import.delete_range,
-                            new_text: String::new(),
-                        },
-                    }),
-                }]
+                Vec::new()
             })
             .collect();
         fixes.extend(self.missing_import_fixes(document, range));
@@ -1692,9 +1669,7 @@ fn parse_workspace_document(workspace: &Workspace, uri: String, text: String) ->
             })
             .map(|import| workspace.unresolved_import_diagnostic(import)),
     );
-    document.collect_unused_import_diagnostics(workspace);
     document.collect_missing_dependency_diagnostics(workspace);
-    document.collect_portability_diagnostics();
     document.collect_undefined_local_diagnostics();
     document
 }
@@ -2301,47 +2276,11 @@ impl Document {
         current.map(|range| *range)
     }
 
-    fn collect_unused_import_diagnostics(&mut self, workspace: &Workspace) {
-        for import in &self.imports {
-            if import.imported_names.is_empty() || !workspace.resolve_module(&import.module) {
-                continue;
-            }
-            if !self.import_is_unused(import) {
-                continue;
-            }
-            self.diagnostics.push(Diagnostic {
-                range: import.statement_range,
-                severity: DiagnosticSeverity::Warning,
-                source: "zuzu-semantic",
-                code: "unused-import",
-                message: format!("Imported symbols from `{}` are unused", import.module),
-            });
-        }
-    }
-
     fn collect_missing_dependency_diagnostics(&mut self, workspace: &Workspace) {
         for import in &self.imports {
             if let Some(diagnostic) = workspace.missing_dependency_diagnostic(&self.uri, import) {
                 self.diagnostics.push(diagnostic);
             }
-        }
-    }
-
-    fn collect_portability_diagnostics(&mut self) {
-        for import in &self.imports {
-            let Some(runtime) = runtime_specific_module(&import.module) else {
-                continue;
-            };
-            self.diagnostics.push(Diagnostic {
-                range: import.module_range,
-                severity: DiagnosticSeverity::Warning,
-                source: "zuzu-semantic",
-                code: "runtime-specific-module",
-                message: format!(
-                    "Module `{}` is specific to the {runtime} implementation",
-                    import.module
-                ),
-            });
         }
     }
 
@@ -2651,14 +2590,6 @@ impl Document {
         }
 
         true
-    }
-
-    fn import_is_unused(&self, import: &Import) -> bool {
-        import.imported_names.iter().all(|name| {
-            self.word_ranges(&name.name)
-                .into_iter()
-                .all(|range| ranges_overlap(range, import.statement_range))
-        })
     }
 
     fn exports_name(&self, name: &str) -> bool {
@@ -3355,13 +3286,6 @@ const SYMBOL_OPERATORS: &[SymbolOperator] = &[
         description: "Numeric greater-than comparison or set literal delimiter.",
     },
 ];
-
-fn runtime_specific_module(module: &str) -> Option<&'static str> {
-    match module {
-        "perl" => Some("Perl"),
-        _ => None,
-    }
-}
 
 fn describe_keyword_or_builtin(word: &str) -> Option<&'static str> {
     match word {
@@ -4701,48 +4625,6 @@ mod tests {
     }
 
     #[test]
-    fn diagnoses_and_fixes_wholly_unused_imports() {
-        let root = unique_temp_dir("zuzu-analysis-unused-import");
-        let module_dir = root.join("modules").join("lib");
-        fs::create_dir_all(&module_dir).unwrap();
-        fs::write(
-            module_dir.join("stuff.zzm"),
-            "class Thing;\nclass Used;\nclass Unused;\n",
-        )
-        .unwrap();
-        let mut analyzer = Analyzer::new(vec![root.clone()]);
-
-        let diagnostics = analyzer.upsert_document(
-            "file:///example.zzs",
-            "from lib/stuff import Thing;\nsay 1;\n",
-        );
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic.source == "zuzu-semantic" && diagnostic.code == "unused-import"
-        }));
-
-        let fixes = analyzer.import_fixes(
-            "file:///example.zzs",
-            Range::new(Position::new(0, 5), Position::new(0, 5)),
-        );
-        assert!(fixes
-            .iter()
-            .any(|fix| fix.title == "Remove unused import `lib/stuff`"));
-
-        let diagnostics = analyzer.upsert_document(
-            "file:///mixed.zzs",
-            "from lib/stuff import Used, Unused;\nsay Used;\n",
-        );
-        assert!(!diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "unused-import"));
-
-        let _ = fs::remove_file(module_dir.join("stuff.zzm"));
-        let _ = fs::remove_dir(module_dir);
-        let _ = fs::remove_dir(root.join("modules"));
-        let _ = fs::remove_dir(root);
-    }
-
-    #[test]
     fn handles_try_import_as_valid_optional_import() {
         let root = unique_temp_dir("zuzu-analysis-try-import");
         let module_dir = root.join("modules").join("lib");
@@ -4775,17 +4657,6 @@ mod tests {
         let _ = fs::remove_dir(module_dir);
         let _ = fs::remove_dir(root.join("modules"));
         let _ = fs::remove_dir(root);
-    }
-
-    #[test]
-    fn warns_about_runtime_specific_module_imports() {
-        let mut analyzer = Analyzer::new(Vec::new());
-        let diagnostics =
-            analyzer.upsert_document("file:///example.zzs", "from perl import eval;\nsay 1;\n");
-
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic.source == "zuzu-semantic" && diagnostic.code == "runtime-specific-module"
-        }));
     }
 
     #[test]

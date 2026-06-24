@@ -1632,57 +1632,6 @@ exit 0
             .ends_with("/modules/missing/module.zzm")
     );
 
-    let unused_uri = Url::from_file_path(root.join("scripts").join("unused.zzs"))
-        .unwrap()
-        .to_string();
-    send(
-        &mut stdin,
-        json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": unused_uri,
-                    "languageId": "zuzu",
-                    "version": 1,
-                    "text": "from example/math import Calculator;\nsay 1;\n"
-                }
-            }
-        }),
-    );
-    let unused_diagnostics = read_method(&mut reader, "textDocument/publishDiagnostics");
-    assert_eq!(unused_diagnostics["params"]["uri"], unused_uri);
-    assert_eq!(
-        unused_diagnostics["params"]["diagnostics"][0]["code"],
-        "unused-import"
-    );
-    assert_eq!(
-        unused_diagnostics["params"]["diagnostics"][0]["severity"],
-        2
-    );
-
-    send(
-        &mut stdin,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 14,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": { "uri": unused_uri },
-                "range": {
-                    "start": { "line": 0, "character": 5 },
-                    "end": { "line": 0, "character": 5 }
-                },
-                "context": { "diagnostics": [] }
-            }
-        }),
-    );
-    let unused_actions = read_response(&mut reader, 14);
-    assert_eq!(
-        unused_actions["result"][0]["title"],
-        "Remove unused import `example/math`"
-    );
-
     let try_import_uri = Url::from_file_path(root.join("scripts").join("try-import.zzs"))
         .unwrap()
         .to_string();
