@@ -1,7 +1,6 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -589,7 +588,10 @@ fn temporary_formatter_input_path() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    env::temp_dir().join(format!("zuzu-lsp-format-{}-{nanos}.zzs", std::process::id()))
+    env::temp_dir().join(format!(
+        "zuzu-lsp-format-{}-{nanos}.zzs",
+        std::process::id()
+    ))
 }
 
 fn parse_lint_diagnostics(stderr: &str) -> Vec<ParserDiagnostic> {
@@ -651,6 +653,7 @@ fn parse_semantic_warning(line: &str) -> Option<ParserDiagnostic> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn doctor_reports_missing_tools() {
@@ -741,7 +744,10 @@ mod tests {
         let root = unique_temp_dir("zuzu-toolchain-format-crlf-lf");
         fs::create_dir_all(&root).unwrap();
         let script = root.join("zuzu-tidy.pl");
-        write_fake_command(&script, "cat \"$1\" >/dev/null\nprintf 'say 1;\\nsay 2;\\n'\n");
+        write_fake_command(
+            &script,
+            "cat \"$1\" >/dev/null\nprintf 'say 1;\\nsay 2;\\n'\n",
+        );
 
         let toolchain = Toolchain {
             tidy: Some(script),

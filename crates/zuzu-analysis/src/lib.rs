@@ -2500,7 +2500,11 @@ impl Document {
         names.extend(BUILTIN_STATEMENTS.iter().map(|word| (*word).to_string()));
         names.extend(BUILTIN_TYPES.iter().map(|word| (*word).to_string()));
         names.extend(BUILTIN_FUNCTIONS.iter().map(|word| (*word).to_string()));
-        names.extend(["__system__", "__global__", "__file__"].into_iter().map(String::from));
+        names.extend(
+            ["__system__", "__global__", "__file__"]
+                .into_iter()
+                .map(String::from),
+        );
         names.extend(["self", "super"].into_iter().map(String::from));
         names.extend(self.imports.iter().flat_map(|import| {
             import

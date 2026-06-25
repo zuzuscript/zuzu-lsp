@@ -22,6 +22,6 @@ serde_json = "1.0"
 tempfile = "3.10"
 thiserror = "1.0"
 tree-sitter = "0.25"
-tree-sitter-zuzu = { git = "https://github.com/zuzuscript/tree-sitter-zuzu", rev = "8593148756686092d0ac547ae868fca5d1b604a3" }
+tree-sitter-zuzu = { git = "https://github.com/zuzuscript/tree-sitter-zuzu", rev = "41117d449e5005ddfc5c8d62f276c5ef2acac178" }
 url = "2.5"
 walkdir = "2.5"

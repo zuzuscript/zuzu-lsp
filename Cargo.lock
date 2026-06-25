@@ -618,8 +618,8 @@ checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
 
 [[package]]
 name = "tree-sitter-zuzu"
-version = "0.0.1"
-source = "git+https://github.com/zuzuscript/tree-sitter-zuzu?rev=8593148756686092d0ac547ae868fca5d1b604a3#8593148756686092d0ac547ae868fca5d1b604a3"
+version = "0.7.0"
+source = "git+https://github.com/zuzuscript/tree-sitter-zuzu?rev=41117d449e5005ddfc5c8d62f276c5ef2acac178#41117d449e5005ddfc5c8d62f276c5ef2acac178"
 dependencies = [
  "cc",
  "tree-sitter",
@@ -780,7 +780,7 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[package]]
 name = "zuzu-analysis"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -793,7 +793,7 @@ dependencies = [
 
 [[package]]
 name = "zuzu-lsp"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -810,7 +810,7 @@ dependencies = [
 
 [[package]]
 name = "zuzu-toolchain"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "thiserror",
 ]
